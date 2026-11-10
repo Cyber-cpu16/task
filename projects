@@ -1,0 +1,160 @@
+/* Meridian — Projects, Reminders, Goals & Habits */
+(function () {
+  const M = window.M;
+  const { html, useState, useRef, Icon, Menu, PageHead, ItemRow, Empty, Bar, Seg, Ring, Tabs } = M;
+  const { addDays, today } = M;
+  const STATUS = { planning: ['Planning', ''], active: ['Active', 'accent'], paused: ['On hold', 'warn'], done: ['Completed', 'ok'] };
+
+  /* ---------- Projects ---------- */
+  function Gantt({ rows, from, to }) {
+    const span = Math.max(1, M.diffDays(from, to)); const pos = (d) => M.clamp((M.diffDays(from, d) / span) * 100, 0, 100); const T = today();
+    const ticks = []; const step = Math.max(1, Math.ceil(span / 6)); for (let i = 0; i <= span; i += step) ticks.push(addDays(from, i));
+    return html`<div class="gantt"><span></span><div class="row between xxs dim">${ticks.map((t) => html`<span>${M.fmtDate(t, 'short')}</span>`)}</div>
+      ${rows.map((r) => html`<button class="trunc" style="text-align:left;${r.done ? 'color:var(--text3);text-decoration:line-through' : ''}" onClick=${r.fn} title=${r.title}>${r.ms ? '◆ ' : ''}${r.title}</button>
+        <div class="gantt-track" style=${`--c:${r.color}`}>${T >= from && T <= to && html`<i class="gantt-today" style=${`left:${pos(T)}%`}></i>`}
+          ${r.ms ? html`<i class="gantt-ms" style=${`left:${pos(r.end)}%;${r.done ? 'opacity:.4' : ''}`} title=${M.fmtDate(r.end)}></i>` : html`<i class="gantt-bar" title=${`${M.fmtDate(r.start)} → ${M.fmtDate(r.end)}`} style=${`left:${pos(r.start)}%;width:${Math.max(1.5, pos(r.end) - pos(r.start))}%;${r.done ? 'opacity:.35' : ''}`}></i>`}</div>`)}</div>`;
+  }
+
+  function ProjectPage({ p }) {
+    const view = M.vs('projView', 'list'), items = M.projectItems(p.id), pr = M.projectProgress(p), T = today(), fileRef = useRef();
+    const upd = (fn) => M.act(() => fn(p));
+    const left = p.target ? M.diffDays(T, p.target) : null;
+    const est = items.reduce((n, i) => n + (i.estimate || 0), 0), spent = items.reduce((n, i) => n + (i.spent || 0), 0);
+    const evs = M.state.events.filter((e) => e.projectId === p.id || e.itemIds.some((id) => items.find((i) => i.id === id))).sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
+    const addTask = (t, msId) => { const q = M.parseQuick(t); M.addItem({ title: q.title || t, due: q.due, dueTime: q.due ? q.time : null, priority: q.priority || p.priority, projectId: p.id, milestoneId: msId || null, categoryId: p.categoryId, kind: q.classId ? 'homework' : 'task', classId: q.classId }); };
+    const addMs = () => M.ask({ title: 'New milestone / stage', label: 'Name', placeholder: 'e.g. Research complete', onSave: (v) => M.open('pickDate', { title: `Target date for “${v}”`, value: p.target || addDays(T, 7), allowClear: true, onPick: (d) => upd(() => p.milestones.push({ id: M.uid(), title: v, date: d, done: false })) }) });
+    const stage = (ms) => { const its = items.filter((i) => (i.milestoneId || null) === (ms ? ms.id : null) || (!ms && !p.milestones.some((m) => m.id === i.milestoneId))).sort(M.itemCmp('status'));
+      if (!ms && !its.length && p.milestones.length) return null; const sp = its.length ? Math.round((its.reduce((n, i) => n + M.frac(i), 0) / its.length) * 100) : ms && ms.done ? 100 : 0;
+      return html`<div class="card pad" key=${ms ? ms.id : 'none'} ...${M.dropProps(['item'], (id) => { const it = M.item(id); it && M.act(() => { it.milestoneId = ms ? ms.id : null; it.projectId = p.id; }); })}>
+        <div class="card-h">${ms ? html`<${M.Check} sq on=${ms.done} color=${p.color} label="Complete milestone" onClick=${() => upd(() => (ms.done = !ms.done))}/><span class="card-t" style=${ms.done ? 'text-decoration:line-through;color:var(--text3)' : ''}>${ms.title}</span>${ms.date && html`<span class="chip ${!ms.done && ms.date < T ? 'over' : ''}"><${Icon} n="flag" s=${12}/>${M.relDate(ms.date)}</span>`}` : html`<span class="card-t">${p.milestones.length ? 'General tasks' : 'Tasks'}</span>`}
+          <span class="grow"></span>${its.length > 0 && html`<span class="xs muted">${sp}%</span><div style="width:70px"><${Bar} pct=${sp} cls="thin" color=${p.color}/></div>`}
+          ${ms && html`<${Menu} trigger=${html`<button class="ibtn sm" aria-label="Milestone actions"><${Icon} n="more" s=${15}/></button>`} items=${[
+            { label: 'Rename', icon: 'edit', fn: () => M.ask({ title: 'Rename milestone', label: 'Name', value: ms.title, onSave: (v) => upd(() => (ms.title = v)) }) },
+            { label: 'Change date', icon: 'calendar', fn: () => M.open('pickDate', { value: ms.date || T, allowClear: true, onPick: (d) => upd(() => (ms.date = d)) }) },
+            { label: 'Delete milestone', icon: 'trash', danger: true, fn: () => M.del(`milestone “${ms.title}”`, (s) => { p.milestones = p.milestones.filter((m) => m.id !== ms.id); s.items.forEach((i) => { if (i.milestoneId === ms.id) i.milestoneId = null; }); }, 'Its tasks stay in the project.') }]}/>`}</div>
+        <div class="list">${its.map((it) => html`<${ItemRow} it=${it} key=${it.id} drag/>`)}</div>
+        <div class="mt8"><${M.QuickAdd} placeholder=${ms ? `Add a task to “${ms.title}”…` : 'Add a task…'} onAdd=${(t) => addTask(t, ms && ms.id)}/></div></div>`; };
+    const dates = [p.start, p.target, ...p.milestones.map((m) => m.date), ...items.map((i) => i.due)].filter(Boolean).sort(); const from = dates[0] || T; let to = dates[dates.length - 1] || addDays(T, 14); if (M.diffDays(from, to) < 7) to = addDays(from, 7);
+    const rows = [...p.milestones.filter((m) => m.date).map((m) => ({ ms: true, title: m.title, end: m.date, done: m.done, color: p.color, fn: () => M.setVs('projView', 'list') })),
+      ...items.filter((i) => i.due).sort(M.itemCmp('due')).map((i) => ({ title: i.title, start: (() => { const c = M.ds(new Date(i.createdAt)); const s2 = i.plannedDate || (c < from ? from : c); return s2 > i.due ? i.due : s2; })(), end: i.due, done: i.status === 'done', color: M.PRI[i.priority].color, fn: () => M.open('item', { id: i.id }) }))];
+    const upload = async (e) => { for (const f of e.target.files) { try { const meta = await M.files.put(f); upd(() => p.attachments.push(meta)); } catch (x) { M.toast(x.message, { kind: 'error' }); } } e.target.value = ''; };
+    return html`<div class="page"><button class="btn sm ghost mb12" onClick=${() => M.go('projects')}><${Icon} n="chevL" s=${14}/>Projects</button>
+      <div class="page-head"><div class="grow" style="min-width:240px"><div class="row mb8"><span class="pill ${STATUS[p.status][1]}">${STATUS[p.status][0]}</span><span class="pill c" style=${`--c:${M.PRI[p.priority].color}`}>${M.PRI[p.priority].label} priority</span>${M.cat(p.categoryId) && html`<span class="pill">${M.cat(p.categoryId).name}</span>`}</div>
+          <h1 class="page-title">${p.title}</h1>${p.desc && html`<div class="page-sub pre">${p.desc}</div>`}</div>
+        <div class="page-actions"><select class="inp" style="width:auto" aria-label="Project status" value=${p.status} onChange=${(e) => upd(() => (p.status = e.target.value))}>${Object.keys(STATUS).map((k) => html`<option value=${k}>${STATUS[k][0]}</option>`)}</select>
+          <button class="btn" onClick=${() => M.open('project', { id: p.id })}><${Icon} n="edit" s=${14}/>Edit</button>
+          <button class="btn danger" aria-label="Delete project" onClick=${async () => { if (await M.del(`project “${p.title}”`, (s) => { s.projects = s.projects.filter((x) => x.id !== p.id); s.items.forEach((i) => { if (i.projectId === p.id) { i.projectId = null; i.milestoneId = null; } }); s.events.forEach((e) => { if (e.projectId === p.id) e.projectId = null; }); }, `Its ${items.length} tasks are kept but detached from the project.`)) M.go('projects'); }}><${Icon} n="trash" s=${14}/></button></div></div>
+      <div class="card pad mb16 row g24 wrap"><${Ring} pct=${pr.pct} size=${92} color=${p.color}><div><div class="serif" style="font-size:25px;line-height:1">${pr.pct}%</div></div><//>
+        <div class="stats grow"><div class="stat"><span class="v">${items.filter((i) => i.status === 'done').length}/${items.length}</span><span class="l">tasks done</span></div><div class="stat"><span class="v">${p.milestones.filter((m) => m.done).length}/${p.milestones.length}</span><span class="l">milestones</span></div>
+          <div class="stat"><span class="v ${left != null && left < 0 && p.status !== 'done' ? 'danger-t' : ''}">${left == null ? '—' : left < 0 ? Math.abs(left) + 'd late' : left + 'd'}</span><span class="l">${p.target ? 'until ' + M.fmtDate(p.target, 'short') : 'no target date'}</span></div>
+          <div class="stat"><span class="v">${M.fmtDur(spent)}</span><span class="l">${est ? 'of ' + M.fmtDur(est) + ' estimated' : 'time spent'}</span></div></div></div>
+      <div class="row wrap mb16"><${Seg} value=${view} onChange=${(v) => M.setVs('projView', v)} options=${[['list', 'List', 'list'], ['board', 'Board', 'kanban'], ['timeline', 'Timeline', 'chart'], ['progress', 'Progress', 'target']]}/><span class="grow"></span>
+        <button class="btn" onClick=${addMs}><${Icon} n="flag" s=${14}/>Milestone</button><button class="btn" onClick=${() => M.open('event', { preset: { title: p.title, projectId: p.id, categoryId: 'school' } })}><${Icon} n="clock" s=${14}/>Work session</button>
+        <button class="btn primary" onClick=${() => M.open('item', { preset: { projectId: p.id, categoryId: p.categoryId, priority: p.priority } })}><${Icon} n="plus" s=${15}/>Task</button></div>
+      ${view === 'list' && html`<div class="col g16">${p.milestones.map(stage)}${stage(null)}</div>`}
+      ${view === 'board' && html`<${M.Kanban} items=${items}/>`}
+      ${view === 'timeline' && html`<div class="card pad">${rows.length === 0 ? html`<${Empty} sm title="Nothing to plot yet" text="Give tasks due dates or add dated milestones to see the timeline."/>` : html`<${Gantt} rows=${rows} from=${from} to=${to}/>`}</div>`}
+      ${view === 'progress' && html`<div class="grid2"><div class="card pad"><div class="card-t mb12">Progress by stage</div>
+          ${[...p.milestones, null].map((ms) => { const its = items.filter((i) => (i.milestoneId || null) === (ms ? ms.id : null)); if (!ms && !its.length) return null; const sp = its.length ? Math.round((its.reduce((n, i) => n + M.frac(i), 0) / its.length) * 100) : ms && ms.done ? 100 : 0; return html`<div class="mb12"><div class="row between sm mb8"><span class="med">${ms ? ms.title : 'General tasks'}${ms && ms.done ? ' ✓' : ''}</span><span class="muted">${its.filter((i) => i.status === 'done').length}/${its.length} tasks · ${sp}%</span></div><${Bar} pct=${sp} color=${p.color}/></div>`; })}
+          ${!items.length && !p.milestones.length && html`<div class="sm dim">Add tasks and milestones — completion is calculated automatically.</div>`}</div>
+        <div class="card pad"><div class="card-h"><span class="card-t">Scheduled work sessions</span></div>${evs.filter((e) => M.isRec(e) || e.date >= T).length === 0 ? html`<${Empty} sm title="No sessions scheduled" text="Block time on your calendar for this project."/>` : evs.filter((e) => M.isRec(e) || e.date >= T).slice(0, 8).map((e) => html`<div class="ag-row" onClick=${() => M.open('event', { id: e.id })}><i class="dot" style=${`--c:${M.eventColor(e)}`}></i><span class="tm">${M.fmtDate(e.date)} · ${M.fmtTime(e.start)}</span><span class="grow trunc">${e.title}</span></div>`)}</div></div>`}
+      <div class="grid2 mt16"><div class="card pad"><div class="card-t mb8"><${Icon} n="file" s=${15}/>Project notes</div><textarea class="inp" rows="6" placeholder="Ideas, sources, decisions…" value=${p.notes} onInput=${(e) => upd(() => (p.notes = e.target.value))}></textarea></div>
+        <div class="card pad"><div class="card-h"><span class="card-t"><${Icon} n="clip" s=${15}/>Attachments</span><span class="grow"></span><button class="btn sm" onClick=${() => fileRef.current.click()}><${Icon} n="upload" s=${13}/>Add file</button><input type="file" multiple hidden ref=${fileRef} onChange=${upload}/></div>
+          ${p.attachments.length === 0 ? html`<div class="sm dim">No files attached.</div>` : p.attachments.map((a, i) => html`<div class="mini-row sm"><${Icon} n="file" s=${14}/><button class="grow trunc accent-t" style="text-align:left" onClick=${() => M.files.open(a)}>${a.name}</button><button class="ibtn sm" aria-label="Remove attachment" onClick=${async () => { if (await M.confirm({ title: 'Remove attachment?', body: a.name, danger: true, confirmLabel: 'Remove' })) { upd(() => p.attachments.splice(i, 1)); M.files.del(a.id); } }}><${Icon} n="x" s=${13}/></button></div>`)}</div></div>
+    </div>`;
+  }
+
+  M.views.projects = function Projects() {
+    const s = M.state, r = M.ui.route; if (r.a && M.project(r.a)) return html`<${ProjectPage} p=${M.project(r.a)}/>`;
+    const f = M.vs('projFilter', 'active'), mode = M.vs('projMode', 'cards'), T = today();
+    const list = s.projects.filter((p) => (f === 'all' ? true : f === 'done' ? p.status === 'done' : p.status !== 'done')).sort((a, b) => (a.target || '9').localeCompare(b.target || '9'));
+    const dates = list.flatMap((p) => [p.start, p.target]).filter(Boolean).sort(); const from = dates[0] || T; let to = dates[dates.length - 1] || addDays(T, 30); if (M.diffDays(from, to) < 14) to = addDays(from, 14);
+    return html`<div class="page"><${PageHead} title="Projects" sub=${`${s.projects.filter((p) => p.status !== 'done').length} in progress · ${s.projects.filter((p) => p.status === 'done').length} completed`}>
+        <${Seg} value=${f} onChange=${(v) => M.setVs('projFilter', v)} options=${[['active', 'In progress'], ['done', 'Completed'], ['all', 'All']]}/>
+        <${Seg} value=${mode} onChange=${(v) => M.setVs('projMode', v)} options=${[['cards', 'Cards', 'grid'], ['timeline', 'Timeline', 'chart']]}/>
+        <button class="btn primary" onClick=${() => M.open('project')}><${Icon} n="plus" s=${15}/>New project</button><//>
+      ${list.length === 0 ? html`<div class="card"><${Empty} icon="layers" title=${s.projects.length ? 'No projects in this view' : 'No projects yet'} text="Projects hold bigger responsibilities — a science fair entry, a college application, a club event — split into stages, tasks and milestones."><button class="btn primary" onClick=${() => M.open('project')}>Create a project</button><//></div>` :
+        mode === 'timeline' ? html`<div class="card pad"><${Gantt} from=${from} to=${to} rows=${list.map((p) => ({ title: p.title, start: p.start || from, end: p.target || to, done: p.status === 'done', color: p.color, fn: () => M.go('projects', p.id) }))}/></div>` :
+        html`<div class="grid-cards">${list.map((p) => { const pr = M.projectProgress(p), left = p.target ? M.diffDays(T, p.target) : null; return html`<button class="card pad hover" style="text-align:left;border-top:3px solid ${p.color}" key=${p.id} onClick=${() => M.go('projects', p.id)}>
+          <div class="row mb8"><span class="pill ${STATUS[p.status][1]}">${STATUS[p.status][0]}</span><span class="grow"></span>${left != null && p.status !== 'done' && html`<span class="xs ${left < 0 ? 'danger-t' : left <= 3 ? 'warn-t' : 'muted'}">${left < 0 ? Math.abs(left) + ' days late' : left === 0 ? 'Due today' : left + ' days left'}</span>`}</div>
+          <b style="font-size:16px;display:block" class="trunc">${p.title}</b><div class="sm muted trunc mb12">${p.desc || 'No description'}</div>
+          <div class="row mb8"><${Bar} pct=${pr.pct} color=${p.color}/><b class="sm">${pr.pct}%</b></div>
+          <div class="xs muted">${pr.items} ${pr.items === 1 ? 'task' : 'tasks'} · ${pr.ms} ${pr.ms === 1 ? 'milestone' : 'milestones'}${p.target ? ' · target ' + M.fmtDate(p.target, 'short') : ''}</div></button>`; })}</div>`}
+    </div>`;
+  };
+
+  /* ---------- Reminders ---------- */
+  M.views.reminders = function Reminders() {
+    const s = M.state, now = M.nowIso(), nf = s.settings.notif, ns = M.nativeState();
+    const up = s.reminders.filter((r) => !r.done && r.at > now).sort((a, b) => a.at.localeCompare(b.at)), past = s.reminders.filter((r) => !r.done && r.at <= now).sort((a, b) => b.at.localeCompare(a.at)), done = s.reminders.filter((r) => r.done).sort((a, b) => b.at.localeCompare(a.at));
+    const linked = M.open_().flatMap((it) => it.reminders.filter((r) => !r.fired && r.at > now).map((r) => ({ it, r }))).sort((a, b) => a.r.at.localeCompare(b.r.at));
+    const evs = []; for (let i = 0; i < 7; i++) { const d = addDays(today(), i); M.timedOn(d).forEach((x) => { if ((x.ev.reminders || []).length && d + 'T' + x.ev.start > now) evs.push(x); }); }
+    const row = (r) => html`<div class="item ${r.done ? 'done' : ''}" key=${r.id} onClick=${() => M.open('reminder', { id: r.id })}><${M.Check} on=${r.done} color=${M.PRI[r.priority].color} onClick=${() => M.act(() => { r.done = !r.done; if (!r.done && r.at > M.nowIso()) r.fired = false; })}/>
+      <div class="item-main"><div class="item-title">${r.title}</div><div class="item-meta"><span class="chip ${!r.done && r.at <= now ? 'over' : ''}"><${Icon} n="clock" s=${12}/>${M.fmtStamp(r.at)}</span>${r.repeat !== 'none' && html`<span class="chip"><${Icon} n="repeat" s=${12}/>${r.repeat}</span>`}${(r.priority === 'urgent' || r.priority === 'high') && html`<span class="chip" style=${`color:${M.PRI[r.priority].color}`}><${Icon} n="flag" s=${12}/>${M.PRI[r.priority].label}</span>`}</div></div>
+      <div class="item-acts" onClick=${(e) => e.stopPropagation()}>${!r.done && html`<${Menu} trigger=${html`<button class="btn sm ghost">Snooze</button>`} items=${[['10 minutes', 10], ['1 hour', 60], ['3 hours', 180], ['Tomorrow', 1440]].map(([l, m]) => ({ label: l, fn: () => { const d = new Date(Date.now() + m * 60000); M.act(() => { r.at = M.ds(d) + 'T' + M.pad(d.getHours()) + ':' + M.pad(d.getMinutes()); r.fired = false; }); M.toast(`Snoozed until ${M.fmtStamp(r.at)}.`); } }))}/>`}
+        <button class="ibtn sm" aria-label="Delete reminder" onClick=${() => M.del('reminder', (st) => (st.reminders = st.reminders.filter((x) => x.id !== r.id)))}><${Icon} n="trash" s=${14}/></button></div></div>`;
+    const setN = (k, v) => M.act((st) => (st.settings.notif[k] = v));
+    const enable = async () => { if (ns === 'unsupported' || ns === 'file') return; const p = await Notification.requestPermission(); setN('native', p === 'granted'); if (p === 'granted') { try { new Notification('Meridian notifications are on', { body: 'You will get alerts here while Meridian is open.' }); } catch (e) {} } else M.toast('Notifications were not allowed. You can change this in your browser’s site settings.'); };
+    return html`<div class="page"><${PageHead} title="Reminders" sub=${`${up.length} upcoming · ${past.length} need attention`}><button class="btn primary" onClick=${() => M.open('reminder')}><${Icon} n="plus" s=${15}/>New reminder</button><//>
+      <div class="split side-r"><div class="col g16">
+        <${M.QuickAdd} icon="bell" placeholder="Remind me to… (e.g. “call grandma tomorrow at 5pm”)" onAdd=${(t) => M.quickCreate('remind me to ' + t)}/>
+        ${past.length > 0 && html`<div class="card pad"><div class="card-h"><span class="card-t danger-t">Needs attention</span><span class="pill danger">${past.length}</span><span class="grow"></span><button class="btn sm ghost" onClick=${() => M.act(() => past.forEach((r) => (r.done = true)))}>Mark all done</button></div><div class="list">${past.map(row)}</div></div>`}
+        <div class="card pad"><div class="card-h"><span class="card-t">Upcoming</span><span class="pill">${up.length}</span></div>${up.length ? html`<div class="list">${up.map(row)}</div>` : html`<${Empty} sm icon="bell" title="No upcoming reminders" text="Create one above — pick an exact date and time, repeat it, and set its priority."/>`}</div>
+        ${(linked.length > 0 || evs.length > 0) && html`<div class="card pad"><div class="card-h"><span class="card-t">From tasks, homework & events</span></div>
+          ${linked.map(({ it, r }) => html`<div class="ag-row" onClick=${() => M.open('item', { id: it.id })}><${Icon} n=${it.kind === 'homework' ? 'book' : 'checkCircle'} s=${14}/><span class="grow trunc">${it.title}</span><span class="xs muted nowrap">${M.fmtStamp(r.at)}</span></div>`)}
+          ${evs.slice(0, 10).map((x) => html`<div class="ag-row" onClick=${() => M.open('event', { id: x.ev.id, date: x.date })}><${Icon} n="calendar" s=${14}/><span class="grow trunc">${x.ev.title}</span><span class="xs muted nowrap">${x.ev.reminders.slice().sort((a, b) => a - b).map((m) => (m ? M.fmtDur(m) : 'at start')).join(', ')} before · ${M.relDate(x.date)} ${M.fmtTime(x.ev.start)}</span></div>`)}</div>`}
+        ${done.length > 0 && html`<div class="card pad"><div class="card-h"><span class="card-t">Done</span><span class="pill">${done.length}</span><span class="grow"></span><button class="btn sm ghost danger" onClick=${() => M.del(`${done.length} completed ${done.length === 1 ? 'reminder' : 'reminders'}`, (st) => (st.reminders = st.reminders.filter((r) => !r.done)))}>Clear</button></div><div class="list">${done.slice(0, 20).map(row)}</div></div>`}
+      </div>
+      <div class="col g16"><div class="card pad"><div class="card-t mb8"><${Icon} n="bell" s=${15}/>How notifications work</div>
+          <p class="sm muted mb12">Reminders appear in the notification center (the bell at the top) and as an in-app alert. Meridian runs entirely in this browser, so <b>reminders only fire while Meridian is open in a tab</b>. Anything that came due while it was closed is delivered the next time you open it.</p>
+          <div class="set-row"><div class="grow"><b>System notifications</b><span>${ns === 'unsupported' ? 'This browser does not support notifications.' : ns === 'file' ? 'Not available when Meridian is opened as a file. Launch it with “Start Meridian” to enable them.' : ns === 'denied' ? 'Blocked in your browser settings for this site.' : ns === 'granted' && nf.native ? 'On — alerts also show outside the browser tab.' : 'Show alerts outside the tab while Meridian is open.'}</span></div>
+            ${ns === 'granted' ? html`<${M.Switch} on=${nf.native} onChange=${(v) => setN('native', v)}/>` : ns === 'default' ? html`<button class="btn sm primary" onClick=${enable}>Enable</button>` : html`<span class="pill">Unavailable</span>`}</div>
+          <div class="set-row"><div class="grow"><b>Sound</b><span>Play a soft chime with each alert.</span></div><${M.Switch} on=${nf.sound} onChange=${(v) => setN('sound', v)}/></div>
+          <div class="set-row"><div class="grow"><b>Due-tomorrow alerts</b><span>Notify me about work due the next day.</span></div><${M.Switch} on=${nf.dueTomorrow} onChange=${(v) => setN('dueTomorrow', v)}/></div>
+          <div class="set-row"><div class="grow"><b>Evening check-in</b><span>“3 unfinished tasks remaining” at a set time.</span></div><input class="inp sm" type="time" style="width:112px" aria-label="Check-in time" disabled=${!nf.digest} value=${nf.digestTime} onInput=${(e) => e.target.value && setN('digestTime', e.target.value)}/><${M.Switch} on=${nf.digest} onChange=${(v) => setN('digest', v)}/></div>
+          <div class="set-row"><div class="grow"><b>Default event alert</b><span>Lead time added to new events.</span></div><select class="inp sm" style="width:112px" aria-label="Default event alert" value=${nf.eventLead} onChange=${(e) => setN('eventLead', +e.target.value)}>${[[0, 'None'], [5, '5 min'], [15, '15 min'], [30, '30 min'], [60, '1 hour']].map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select></div>
+          <button class="btn sm mt12" onClick=${() => M.notify({ title: 'Test notification', body: 'This is what a Meridian alert looks like.', kind: 'info' })}>Send a test alert</button></div></div>
+      </div></div>`;
+  };
+
+  /* ---------- Goals & Habits ---------- */
+  const SCOPES = [['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly'], ['yearly', 'Yearly'], ['long', 'Long-term']];
+  function GoalCard({ g }) {
+    const [open, setOpen] = useState(false); const pct = M.goalProgress(g), items = M.live().filter((i) => i.goalId === g.id), T = today(); const upd = (fn) => M.act(() => fn(g));
+    return html`<div class="card pad"><div class="row top g12"><${Ring} pct=${pct} size=${52} stroke=${6} color=${g.done ? 'var(--ok)' : 'var(--accent)'}><b class="xxs">${pct}%</b><//>
+        <div class="grow" style="min-width:0;cursor:pointer" onClick=${() => setOpen(!open)}><b style=${g.done ? 'text-decoration:line-through;color:var(--text3)' : ''}>${g.title}</b>
+          <div class="item-meta">${g.target && html`<span class="chip ${!g.done && g.target < T ? 'over' : ''}"><${Icon} n="flag" s=${12}/>${M.relDate(g.target)}</span>`}<span class="chip">${g.milestones.filter((m) => m.done).length}/${g.milestones.length} milestones</span>${items.length > 0 && html`<span class="chip">${items.filter((i) => i.status === 'done').length}/${items.length} tasks</span>`}</div>
+          ${g.desc && html`<div class="sm muted mt4 ${open ? 'pre' : 'trunc'}">${g.desc}</div>`}</div>
+        <button class="ibtn sm" aria-label=${open ? 'Collapse' : 'Expand'} aria-expanded=${open} onClick=${() => setOpen(!open)}><${Icon} n=${open ? 'chevU' : 'chevD'} s=${15}/></button>
+        <${Menu} trigger=${html`<button class="ibtn sm" aria-label="Goal actions"><${Icon} n="more" s=${15}/></button>`} items=${[{ label: g.done ? 'Reopen goal' : 'Mark achieved', icon: 'checkCircle', fn: () => { upd(() => { g.done = !g.done; g.doneAt = g.done ? Date.now() : null; }); if (g.done) M.toast('Goal achieved — nicely done.'); } }, { label: 'Edit', icon: 'edit', fn: () => M.open('goal', { id: g.id }) }, { label: 'Add linked task', icon: 'plus', fn: () => M.open('item', { preset: { goalId: g.id, categoryId: 'longterm' } }) }]}/></div>
+      ${open && html`<div class="mt12 col g12">
+        ${g.mode === 'manual' && html`<div><span class="lbl">Progress · ${g.progress}%</span><input type="range" min="0" max="100" step="5" aria-label="Progress" value=${g.progress} onInput=${(e) => upd(() => (g.progress = +e.target.value))}/></div>`}
+        <div><div class="up mb8">Milestones</div><${M.MiniList} items=${g.milestones} placeholder="Add a milestone" onToggle=${(m) => upd(() => (m.done = !m.done))} onText=${(m, v) => upd(() => (m.title = v))} onDel=${(m) => upd(() => (g.milestones = g.milestones.filter((x) => x.id !== m.id)))} onAdd=${(t) => upd(() => g.milestones.push({ id: M.uid(), title: t, done: false }))}/></div>
+        <div><div class="up mb8">Linked tasks</div>${items.length === 0 ? html`<div class="sm dim">No tasks linked. Link any task to this goal from its details, or add one below.</div>` : html`<div class="list">${items.map((it) => html`<${ItemRow} it=${it} key=${it.id}/>`)}</div>`}
+          <div class="mt8"><${M.QuickAdd} placeholder="Add a task toward this goal…" onAdd=${(t) => { const q = M.parseQuick(t); M.addItem({ title: q.title || t, due: q.due, priority: q.priority || 'medium', goalId: g.id, categoryId: 'longterm' }); }}/></div></div>
+        ${g.notes && html`<div><div class="up mb8">Notes</div><div class="sm pre muted">${g.notes}</div></div>`}</div>`}</div>`;
+  }
+  function HabitCard({ h }) {
+    const T = today(); const [m, setM] = useState(T.slice(0, 8) + '01'); const start = M.weekStart(m), mo = M.pd(m).getMonth(), streak = M.habitStreak(h), rate = M.habitRate(h, 30);
+    const cells = []; for (let i = 0; i < 42; i++) cells.push(addDays(start, i)); const n = cells[35].slice(0, 7) === m.slice(0, 7) ? 42 : 35;
+    const monthDone = Object.keys(h.log).filter((d) => d.slice(0, 7) === m.slice(0, 7)).length;
+    return html`<div class="card pad"><div class="row g12 mb12"><div class="class-ic" style=${`--c:${h.color}`}>${h.icon}</div><div class="grow" style="min-width:0"><b class="trunc" style="display:block">${h.name}</b><span class="xs muted">${h.freq === 'weekly' ? `${h.perWeek}× per week · ${M.habitWeekCount(h, T)}/${h.perWeek} this week` : h.days.length ? h.days.slice().sort().map((d) => M.DOWS[d]).join(', ') : 'Every day'}</span></div>
+        <button class="btn sm ${h.log[T] ? 'soft' : 'primary'}" onClick=${() => M.toggleHabit(h, T)}>${h.log[T] ? html`<${Icon} n="check" s=${13}/>Done today` : 'Mark today'}</button>
+        <button class="ibtn sm" aria-label="Edit habit" onClick=${() => M.open('habit', { id: h.id })}><${Icon} n="edit" s=${14}/></button></div>
+      <div class="row g16 mb12"><div class="stat"><span class="v">${streak ? '🔥 ' : ''}${streak}</span><span class="l">${h.freq === 'weekly' ? 'week' : 'day'} streak</span></div><div class="stat"><span class="v">${rate}%</span><span class="l">30-day consistency</span></div><div class="stat"><span class="v">${monthDone}</span><span class="l">this month</span></div></div>
+      <div class="row between mb8"><button class="ibtn sm" aria-label="Previous month" onClick=${() => setM(M.addMonths(m, -1))}><${Icon} n="chevL" s=${14}/></button><span class="sm med">${M.MON[mo]} ${M.pd(m).getFullYear()}</span><button class="ibtn sm" aria-label="Next month" disabled=${m >= T.slice(0, 8) + '01'} onClick=${() => setM(M.addMonths(m, 1))}><${Icon} n="chevR" s=${14}/></button></div>
+      <div class="heat" style=${`--c:${h.color}`}>${cells.slice(0, 7).map((d) => html`<span class="xxs dim center">${M.DOWS[M.dow(d)][0]}</span>`)}${cells.slice(0, n).map((d) => M.pd(d).getMonth() !== mo ? html`<i></i>` : html`<button class="${h.log[d] ? 'on' : ''} ${d === T ? 'today' : ''} ${!M.habitDue(h, d) && !h.log[d] ? 'off' : ''}" disabled=${d > T} title=${M.fmtDate(d) + (h.log[d] ? ' · done' : '')} aria-pressed=${!!h.log[d]} onClick=${() => M.toggleHabit(h, d)}>${M.pd(d).getDate()}</button>`)}</div></div>`;
+  }
+  M.views.goals = function Goals() {
+    const s = M.state, tab = M.vs('goalTab', 'goals'), T = today(); const habits = s.habits.filter((h) => !h.archived);
+    const todays = habits.filter((h) => M.habitDue(h, T));
+    return html`<div class="page"><${PageHead} title="Goals" sub=${`${s.goals.filter((g) => !g.done).length} active goals · ${todays.filter((h) => h.log[T]).length}/${todays.length} habits done today`}>
+        <${Seg} value=${tab} onChange=${(v) => M.setVs('goalTab', v)} options=${[['goals', 'Goals', 'target'], ['habits', 'Habits', 'flame']]}/>
+        ${tab === 'goals' ? html`<button class="btn primary" onClick=${() => M.open('goal')}><${Icon} n="plus" s=${15}/>New goal</button>` : html`<button class="btn primary" onClick=${() => M.open('habit')}><${Icon} n="plus" s=${15}/>New habit</button>`}<//>
+      ${tab === 'goals' && (s.goals.length === 0 ? html`<div class="card"><${Empty} icon="target" title="Set your first goal" text="Daily, weekly, monthly, yearly or long-term. Add milestones and link tasks — progress updates on its own."><button class="btn primary" onClick=${() => M.open('goal')}>Create a goal</button><//></div>` :
+        html`<div class="col g24">${SCOPES.map(([k, l]) => { const gs = s.goals.filter((g) => g.scope === k).sort((a, b) => a.done - b.done); if (!gs.length) return null; return html`<div><div class="row mb8"><span class="up">${l} goals</span><span class="grow"></span><button class="btn sm ghost" onClick=${() => M.open('goal', { preset: { scope: k } })}><${Icon} n="plus" s=${13}/>Add</button></div><div class="grid2">${gs.map((g) => html`<${GoalCard} g=${g} key=${g.id}/>`)}</div></div>`; })}</div>`)}
+      ${tab === 'habits' && (habits.length === 0 ? html`<div class="card"><${Empty} icon="flame" title="Build a habit" text="Track daily or weekly habits, keep streaks alive and review each month on a calendar."><button class="btn primary" onClick=${() => M.open('habit')}>Create a habit</button><//></div>` :
+        html`<div class="grid-cards" style="grid-template-columns:repeat(auto-fill,minmax(310px,1fr))">${habits.map((h) => html`<${HabitCard} h=${h} key=${h.id}/>`)}</div>`)}
+    </div>`;
+  };
+})();
