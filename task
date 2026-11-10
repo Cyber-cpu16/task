@@ -1,0 +1,191 @@
+/* Meridian — Tasks and Homework */
+(function () {
+  const M = window.M;
+  const { html, useState, Icon, Menu, PageHead, ItemRow, Empty, Bar, Seg, Tabs } = M;
+  const { addDays, today } = M;
+
+  const SORTS = { manual: 'Manual order', due: 'Due date', priority: 'Priority', category: 'Category', status: 'Status', created: 'Newest', title: 'Title' };
+  const cmp = (sort) => (a, b) => {
+    const due = (M.dueTs(a) || 9e15) - (M.dueTs(b) || 9e15);
+    switch (sort) {
+      case 'due': return due || M.PRI[a.priority].rank - M.PRI[b.priority].rank;
+      case 'priority': return M.PRI[a.priority].rank - M.PRI[b.priority].rank || due;
+      case 'category': return ((M.cat(a.categoryId) || M.cls(a.classId) || {}).name || '~').localeCompare((M.cat(b.categoryId) || M.cls(b.classId) || {}).name || '~') || due;
+      case 'status': return ['doing', 'todo', 'done'].indexOf(a.status) - ['doing', 'todo', 'done'].indexOf(b.status) || due;
+      case 'created': return b.createdAt - a.createdAt;
+      case 'title': return a.title.localeCompare(b.title);
+      default: return a.order - b.order;
+    }
+  };
+  M.itemCmp = cmp;
+  const dueBucket = (i) => { const T = today(); if (!i.due) return 'No due date'; if (M.isOverdue(i)) return 'Overdue'; if (i.due === T) return 'Today'; if (i.due === addDays(T, 1)) return 'Tomorrow'; if (i.due <= addDays(T, 7)) return 'Next 7 days'; return 'Later'; };
+  const groupOf = (sort, i) => sort === 'due' ? dueBucket(i) : sort === 'priority' ? M.PRI[i.priority].label : sort === 'category' ? ((i.kind === 'homework' ? M.cls(i.classId) : M.cat(i.categoryId)) || { name: 'Uncategorized' }).name : sort === 'status' ? { todo: 'To do', doing: 'In progress', done: 'Done' }[i.status] : null;
+  const grouped = (list, sort) => { const g = []; list.forEach((i) => { const k = groupOf(sort, i); let x = g.find((y) => y.k === k); if (!x) g.push((x = { k, items: [] })); x.items.push(i); }); return g; };
+
+  /* generic kanban by status */
+  M.Kanban = ({ items, extra }) => {
+    const cols = [['todo', 'To do', 'var(--text3)'], ['doing', 'In progress', 'var(--accent)'], ['done', 'Done', 'var(--ok)']];
+    return html`<div class="kanban">${cols.map(([k, l, c]) => { const list = items.filter((i) => i.status === k).sort(cmp('due')); return html`<div class="kb-col" ...${M.dropProps(['item'], (id) => { const it = M.item(id); if (it && it.status !== k) M.setStatus(it, k); })}>
+      <div class="kb-h"><i class="dot" style=${`--c:${c}`}></i>${l}<span class="dim med">${list.length}</span></div>
+      ${list.map((it) => { const p = M.progress(it), u = M.urgency(it), cl = it.kind === 'homework' ? M.cls(it.classId) : M.cat(it.categoryId); return html`<div class="kb-card" key=${it.id} style=${`--c:${M.itemColor(it)}`} ...${M.dragProps('item', it.id)} onClick=${() => M.open('item', { id: it.id })}>
+        <div class="med" style=${k === 'done' ? 'text-decoration:line-through;color:var(--text3)' : ''}>${it.title}</div>
+        <div class="item-meta">${it.due && html`<span class="chip ${u}"><${Icon} n="calendar" s=${12}/>${M.dueLabel(it)}</span>`}${cl && html`<span class="chip">${cl.name}</span>`}${(it.priority === 'urgent' || it.priority === 'high') && html`<span class="chip" style=${`color:${M.PRI[it.priority].color}`}><${Icon} n="flag" s=${12}/>${M.PRI[it.priority].label}</span>`}</div>
+        ${p.total > 0 && html`<div class="row mt8"><${Bar} pct=${p.pct} cls="thin" color=${M.itemColor(it)}/><span class="xs muted">${p.pct}%</span></div>`}</div>`; })}
+      ${list.length === 0 && html`<div class="xs dim center" style="padding:14px 0">Drop here</div>`}
+      ${k === 'todo' && extra}</div>`; })}</div>`;
+  };
+
+  /* ---------- Tasks ---------- */
+  M.views.tasks = function Tasks() {
+    const s = M.state, S = s.settings, T = today(), view = M.vs('taskView', 'all'), sort = M.vs('taskSort', 'manual');
+    const [q, setQ] = useState(''); const [showDone, setShowDone] = useState(false); const priF = M.vs('taskPri', []);
+    const base = s.items.filter((i) => S.tasksShowHomework || i.kind === 'task');
+    const tests = {
+      all: (i) => !i.archived, today: (i) => !i.archived && (i.due === T || i.plannedDate === T), upcoming: (i) => !i.archived && i.due > T && i.due <= addDays(T, 7),
+      overdue: (i) => !i.archived && M.isOverdue(i), nodate: (i) => !i.archived && !i.due, completed: (i) => !i.archived && i.status === 'done', archived: (i) => i.archived,
+    };
+    const [vk, vid] = view.split(':');
+    const test = vk === 'cat' ? (i) => !i.archived && i.kind === 'task' && i.categoryId === vid : vk === 'list' ? (i) => !i.archived && i.kind === 'task' && i.listId === vid : tests[view] || tests.all;
+    const count = (t) => base.filter((i) => t(i) && (i.status !== 'done' || t === tests.completed || t === tests.archived)).length;
+    let list = base.filter(test); if (q) list = list.filter((i) => (i.title + ' ' + i.desc + ' ' + i.notes).toLowerCase().includes(q.toLowerCase())); if (priF.length) list = list.filter((i) => priF.includes(i.priority));
+    const showAll = view === 'completed' || view === 'archived';
+    const open = (showAll ? list : list.filter((i) => i.status !== 'done')).sort(cmp(showAll ? 'created' : sort));
+    const done = showAll ? [] : list.filter((i) => i.status === 'done').sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
+    const curList = vk === 'list' ? s.lists.find((l) => l.id === vid) : null, curCat = vk === 'cat' ? M.cat(vid) : null;
+    const title = curList ? curList.name : curCat ? curCat.name : { all: 'All tasks', today: 'Today', upcoming: 'Next 7 days', overdue: 'Overdue', nodate: 'No due date', completed: 'Completed', archived: 'Archive' }[view] || 'All tasks';
+    const add = (text, extra = {}) => M.quickCreate(text, { categoryId: curCat ? curCat.id : null, item: { ...(curList ? { listId: curList.id } : {}), ...(view === 'today' ? { plannedDate: T } : {}), ...extra } });
+    const reorder = (id, before) => M.reorder(open.map((x) => x.id), id, before, (x, n) => (M.item(x).order = n));
+    const row = (it) => html`<${ItemRow} it=${it} key=${it.id} drag=${sort === 'manual' && !showAll} onDropBefore=${sort === 'manual' ? reorder : null}/>`;
+    const nav = (k, label, icon, n, drop) => html`<button class=${view === k ? 'on' : ''} onClick=${() => M.setVs('taskView', k)} ...${drop ? M.dropProps(['item'], drop) : {}}>${typeof icon === 'string' ? html`<${Icon} n=${icon} s=${15}/>` : icon}<span class="trunc">${label}</span>${n > 0 && html`<span class="cnt">${n}</span>`}</button>`;
+    const newCat = () => M.ask({ title: 'New category', label: 'Category name', placeholder: 'e.g. Volunteering', onSave: (v) => { if (s.categories.some((c) => c.name.toLowerCase() === v.toLowerCase())) return M.toast('That category already exists.'); const c = { id: M.uid(), name: v, color: M.PALETTE[s.categories.length % M.PALETTE.length] }; M.act((st) => { st.categories.push(c); st.view.taskView = 'cat:' + c.id; }); } });
+    const newList = () => M.ask({ title: 'New list', label: 'List name', placeholder: 'e.g. Summer plans', onSave: (v) => { const l = { id: M.uid(), name: v, sections: [] }; M.act((st) => { st.lists.push(l); st.view.taskView = 'list:' + l.id; }); } });
+    const headMenu = [
+      curList && { label: 'Add section', icon: 'plus', fn: () => M.ask({ title: 'New section', label: 'Section name', placeholder: 'e.g. This week', onSave: (v) => M.act(() => curList.sections.push({ id: M.uid(), name: v })) }) },
+      curList && { label: 'Rename list', icon: 'edit', fn: () => M.ask({ title: 'Rename list', label: 'Name', value: curList.name, onSave: (v) => M.act(() => (curList.name = v)) }) },
+      curList && s.lists.length > 1 && { label: 'Delete list', icon: 'trash', danger: true, fn: () => M.del(`list “${curList.name}”`, (st) => { const dest = st.lists.find((l) => l.id !== curList.id); st.items.forEach((i) => { if (i.listId === curList.id) { i.listId = dest.id; i.sectionId = null; } }); st.lists = st.lists.filter((l) => l.id !== curList.id); st.view.taskView = 'all'; }, `Its tasks move to “${s.lists.find((l) => l.id !== curList.id).name}”.`) },
+      curCat && { label: 'Rename category', icon: 'edit', fn: () => M.ask({ title: 'Rename category', label: 'Name', value: curCat.name, onSave: (v) => M.act(() => (curCat.name = v)) }) },
+      curCat && { label: 'Delete category', icon: 'trash', danger: true, fn: () => M.del(`category “${curCat.name}”`, (st) => { st.items.forEach((i) => { if (i.categoryId === curCat.id) i.categoryId = null; }); st.categories = st.categories.filter((c) => c.id !== curCat.id); st.view.taskView = 'all'; }, 'Tasks in it are kept and become uncategorized.') },
+      done.length > 0 && { label: `Archive ${done.length} completed`, icon: 'archive', fn: () => { const ids = done.map((i) => i.id); M.act(() => done.forEach((i) => (i.archived = true))); M.toast(`Archived ${ids.length}.`, { label: 'Undo', action: () => M.act((st) => st.items.forEach((i) => { if (ids.includes(i.id)) i.archived = false; })) }); } },
+      { label: S.tasksShowHomework ? 'Hide homework here' : 'Show homework here too', icon: 'book', on: S.tasksShowHomework, fn: () => M.act((st) => (st.settings.tasksShowHomework = !S.tasksShowHomework)) },
+    ];
+    const body = () => {
+      if (!open.length && !done.length) return html`<${Empty} icon=${view === 'overdue' ? 'checkCircle' : 'inbox'} title=${q || priF.length ? 'No tasks match your filters' : view === 'overdue' ? 'Nothing overdue' : view === 'archived' ? 'The archive is empty' : view === 'completed' ? 'No completed tasks yet' : 'No tasks here yet'} text=${q || priF.length ? 'Try clearing the search or priority filter.' : showAll || view === 'overdue' ? '' : 'Type above and press Enter. Try “Clean room tomorrow, high priority”.'}/>`;
+      if (curList && sort === 'manual') {
+        const secs = [{ id: null, name: null }, ...curList.sections];
+        return secs.map((sec) => { const its = open.filter((i) => (i.sectionId || null) === sec.id || (sec.id === null && !curList.sections.some((x) => x.id === i.sectionId))); if (sec.id === null && !its.length && curList.sections.length) return null;
+          return html`<div key=${sec.id || 'none'} ...${M.dropProps(['item'], (id) => { const it = M.item(id); if (it) M.act(() => { it.sectionId = sec.id; it.listId = curList.id; }); })}>
+            ${sec.id && html`<div class="group-h"><${Icon} n="chevD" s=${13}/>${sec.name}<span class="cnt">${its.length}</span><span class="grow"></span><${Menu} trigger=${html`<button class="ibtn sm" aria-label="Section actions"><${Icon} n="more" s=${14}/></button>`} items=${[
+              { label: 'Add task here', icon: 'plus', fn: () => M.open('item', { preset: { listId: curList.id, sectionId: sec.id } }) },
+              { label: 'Rename section', icon: 'edit', fn: () => M.ask({ title: 'Rename section', label: 'Name', value: sec.name, onSave: (v) => M.act(() => (sec.name = v)) }) },
+              { label: 'Delete section', icon: 'trash', danger: true, fn: () => M.del(`section “${sec.name}”`, (st) => { st.items.forEach((i) => { if (i.sectionId === sec.id) i.sectionId = null; }); curList.sections = curList.sections.filter((x) => x.id !== sec.id); }, 'Its tasks stay in the list.') }]}/></div>`}
+            <div class="list">${its.map(row)}</div>${sec.id && !its.length && html`<div class="xs dim" style="padding:4px 10px 8px">Drag tasks here, or use the section menu to add one.</div>`}</div>`; });
+      }
+      const gs = sort === 'manual' || sort === 'created' || sort === 'title' || showAll ? [{ k: null, items: open }] : grouped(open, sort);
+      return gs.map((g) => html`<div key=${g.k || 'all'}>${g.k && html`<div class="group-h ${g.k === 'Overdue' ? 'danger-t' : ''}">${g.k}<span class="cnt">${g.items.length}</span></div>`}<div class="list">${g.items.map(row)}</div></div>`);
+    };
+    return html`<div class="page"><${PageHead} title="Tasks" sub=${`${count(tests.all)} open · ${count(tests.overdue)} overdue · ${M.completedOn(T).filter((i) => i.kind === 'task').length} completed today`}>
+        <button class="btn primary" onClick=${() => M.open('item', { preset: { categoryId: curCat ? curCat.id : null, listId: curList ? curList.id : 'main' } })}><${Icon} n="plus" s=${15}/>New task</button><//>
+      <div class="split side-l">
+        <nav class="side-nav" aria-label="Task views">
+          ${nav('all', 'All tasks', 'inbox', count(tests.all))}${nav('today', 'Today', 'sun', count(tests.today))}${nav('upcoming', 'Next 7 days', 'calendar', count(tests.upcoming))}${nav('overdue', 'Overdue', 'alert', count(tests.overdue))}${nav('nodate', 'No due date', 'clock', count(tests.nodate))}${nav('completed', 'Completed', 'checkCircle', 0)}${nav('archived', 'Archive', 'archive', 0)}
+          <h5>Categories<span class="grow"></span><button class="ibtn sm" aria-label="New category" onClick=${newCat}><${Icon} n="plus" s=${13}/></button></h5>
+          ${s.categories.map((c) => nav('cat:' + c.id, c.name, html`<i class="dot" style=${`--c:${c.color};margin:0 3px`}></i>`, base.filter((i) => !i.archived && i.status !== 'done' && i.kind === 'task' && i.categoryId === c.id).length, (id) => { const it = M.item(id); if (it && it.kind === 'task') { M.act(() => (it.categoryId = c.id)); M.toast(`Moved to ${c.name}.`); } }))}
+          <h5>Lists<span class="grow"></span><button class="ibtn sm" aria-label="New list" onClick=${newList}><${Icon} n="plus" s=${13}/></button></h5>
+          ${s.lists.map((l) => nav('list:' + l.id, l.name, 'list', base.filter((i) => !i.archived && i.status !== 'done' && i.kind === 'task' && i.listId === l.id).length, (id) => { const it = M.item(id); if (it && it.kind === 'task') { M.act(() => { it.listId = l.id; it.sectionId = null; }); M.toast(`Moved to ${l.name}.`); } }))}
+        </nav>
+        <div class="card pad" style="min-width:0">
+          <div class="row wrap mb12">${curCat && html`<i class="dot" style=${`--c:${curCat.color};width:10px;height:10px`}></i>`}<h2 style="font-size:18px;font-weight:600">${title}</h2><span class="grow"></span>
+            <div class="tb-search" style="width:200px;height:32px;box-shadow:none"><${Icon} n="search" s=${14}/><input style="border:0;outline:0;background:transparent;width:100%;color:var(--text)" placeholder="Search tasks" aria-label="Search tasks" value=${q} onInput=${(e) => setQ(e.target.value)}/></div>
+            <${Menu} trigger=${html`<button class="btn sm ${priF.length ? 'soft' : ''}"><${Icon} n="filter" s=${13}/>Priority${priF.length ? ` (${priF.length})` : ''}</button>`} items=${[...M.PRI_KEYS.map((k) => ({ label: M.PRI[k].label, dot: M.PRI[k].color, on: priF.includes(k), fn: () => M.setVs('taskPri', priF.includes(k) ? priF.filter((x) => x !== k) : [...priF, k]) })), '-', { label: 'Clear filter', fn: () => M.setVs('taskPri', []) }]}/>
+            <${Menu} trigger=${html`<button class="btn sm"><${Icon} n="sliders" s=${13}/>${SORTS[sort]}</button>`} items=${[{ h: 'Sort & group by' }, ...Object.keys(SORTS).map((k) => ({ label: SORTS[k], on: sort === k, fn: () => M.setVs('taskSort', k) }))]}/>
+            <${Menu} trigger=${html`<button class="ibtn" aria-label="List options"><${Icon} n="more"/></button>`} items=${headMenu}/></div>
+          ${!showAll && view !== 'overdue' && html`<div class="mb8"><${M.QuickAdd} placeholder=${`Add a task${curList ? ' to ' + curList.name : curCat ? ' in ' + curCat.name : ''}… (try “due Friday, high priority”)`} onAdd=${(t) => add(t)}/></div>`}
+          ${body()}
+          ${done.length > 0 && html`<button class="group-h" style="width:100%" aria-expanded=${showDone} onClick=${() => setShowDone(!showDone)}><${Icon} n=${showDone ? 'chevD' : 'chevR'} s=${13}/>Completed<span class="cnt">${done.length}</span></button>${showDone && html`<div class="list">${done.slice(0, 50).map((it) => html`<${ItemRow} it=${it} key=${it.id}/>`)}</div>`}`}
+        </div>
+      </div></div>`;
+  };
+
+  /* ---------- Homework ---------- */
+  const hwAll = () => M.live().filter((i) => i.kind === 'homework');
+  const isMajor = (i) => i.type === 'project' || i.type === 'test' || (i.estimate || 0) >= 180;
+  const Section = ({ title, items, tone, empty, hideClass }) => (items.length || empty) ? html`<div class="card pad"><div class="card-h"><span class="card-t ${tone || ''}">${title}</span><span class="pill ${tone === 'danger-t' && items.length ? 'danger' : tone === 'warn-t' && items.length ? 'warn' : ''}">${items.length}</span></div>${items.length ? html`<div class="list">${items.map((it) => html`<${ItemRow} it=${it} key=${it.id} hideClass=${hideClass}/>`)}</div>` : html`<div class="sm dim">${empty}</div>`}</div>` : null;
+
+  function HwCalendar() {
+    const [m, setM] = useState(today().slice(0, 8) + '01'); const T = today(), start = M.weekStart(m), mo = M.pd(m).getMonth();
+    const cells = []; for (let i = 0; i < 42; i++) cells.push(addDays(start, i)); const rows = cells[35].slice(0, 7) === m.slice(0, 7) ? 42 : 35; const all = hwAll();
+    return html`<div><div class="row mb12"><${M.DateNav} onPrev=${() => setM(M.addMonths(m, -1))} onNext=${() => setM(M.addMonths(m, 1))} onToday=${() => setM(T.slice(0, 8) + '01')} label=${`${M.MON[mo]} ${M.pd(m).getFullYear()}`}/></div>
+      <div class="month"><div class="month-head">${cells.slice(0, 7).map((d) => html`<div>${M.DOWS[M.dow(d)]}</div>`)}</div><div class="month-grid">${cells.slice(0, rows).map((d) => { const its = all.filter((i) => i.due === d);
+        return html`<div class="mcell ${M.pd(d).getMonth() !== mo ? 'out' : ''} ${d === T ? 'today' : ''}" onClick=${() => M.open('item', { preset: { kind: 'homework', due: d } })} ...${M.dropProps(['due'], (id) => { const it = M.item(id); it && M.setDue(it, d); })}>
+          <div class="mc-n">${M.pd(d).getDate()}</div>
+          ${its.slice(0, 3).map((it) => html`<button class="tg-chip ${it.status === 'done' ? 'done' : ''}" style=${`--c:${M.itemColor(it)}`} ...${M.dragProps('due', it.id)} onClick=${(e) => { e.stopPropagation(); M.open('item', { id: it.id }); }}><span class="trunc">${it.title}</span></button>`)}
+          ${its.length > 3 && html`<span class="mc-more">+${its.length - 3} more</span>`}</div>`; })}</div></div>
+      <div class="xs dim mt8">Click a day to add an assignment due then · drag an assignment to change its due date.</div></div>`;
+  }
+
+  function ClassPage({ c }) {
+    const s = M.state, tab = M.vs('classTab', 'assignments'), T = today(); const [mt, setMt] = useState(''), [mu, setMu] = useState('');
+    const items = hwAll().filter((i) => i.classId === c.id), open = items.filter((i) => i.status !== 'done');
+    const graded = items.filter((i) => i.grade && i.grade.score != null && i.grade.total > 0); const avg = graded.length ? Math.round((graded.reduce((n, i) => n + i.grade.score / i.grade.total, 0) / graded.length) * 1000) / 10 : null;
+    const byType = { assignments: items.filter((i) => !['test', 'project'].includes(i.type)), tests: items.filter((i) => i.type === 'test'), projects: items.filter((i) => i.type === 'project') };
+    const notes = s.notes.filter((n) => (n.links || []).some((l) => l.type === 'class' && l.id === c.id));
+    const dates = [...s.events.filter((e) => e.classId === c.id && (M.isRec(e) || e.date >= T)).map((e) => ({ d: e.date, title: e.title, sub: (e.allDay ? 'All day' : M.fmtTime(e.start, true)) + (M.isRec(e) ? ' · ' + M.recLabel(e.rec) : ''), fn: () => M.open('event', { id: e.id }) })),
+      ...open.filter((i) => i.due && isMajor(i)).map((i) => ({ d: i.due, title: i.title, sub: i.type === 'test' ? 'Test' : 'Major deadline', fn: () => M.open('item', { id: i.id }) }))].sort((a, b) => a.d.localeCompare(b.d));
+    const list = (arr, type, label) => html`<div class="card pad"><div class="mb8"><${M.QuickAdd} placeholder=${`Add ${label} for ${c.name}… (e.g. “Chapter 4 questions due Thursday”)`} onAdd=${(t) => { const p = M.parseQuick(t); M.addItem({ kind: 'homework', classId: c.id, type, title: p.title || t, due: p.due, dueTime: p.due ? p.time : null, priority: p.priority || 'medium' }); }}/></div>
+      ${arr.length === 0 ? html`<${Empty} sm title=${`No ${label}s yet`}/>` : html`<div class="list">${arr.filter((i) => i.status !== 'done').sort(M.itemCmp('due')).map((it) => html`<${ItemRow} it=${it} key=${it.id} hideClass/>`)}</div>${arr.some((i) => i.status === 'done') && html`<div class="group-h">Completed</div><div class="list">${arr.filter((i) => i.status === 'done').map((it) => html`<${ItemRow} it=${it} key=${it.id} hideClass extra=${it.grade && it.grade.score != null ? html`<span class="pill ok" style="height:18px;font-size:11px">${it.grade.score}/${it.grade.total}</span>` : null}/>`)}</div>`}`}</div>`;
+    const addMat = (e) => { e.preventDefault(); if (!mt.trim()) return; let url = mu.trim(); if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url; M.act(() => { c.materials = c.materials || []; c.materials.push({ id: M.uid(), title: mt.trim(), url }); }); setMt(''); setMu(''); };
+    return html`<div class="page"><button class="btn sm ghost mb12" onClick=${() => M.go('homework')}><${Icon} n="chevL" s=${14}/>Homework</button>
+      <div class="page-head"><div class="row g16"><div class="class-ic lg" style=${`--c:${c.color}`}>${c.icon}</div><div><h1 class="page-title">${c.name}</h1><div class="page-sub">${[c.teacher, c.room].filter(Boolean).join(' · ') || 'No teacher or room set'}</div></div></div>
+        <div class="page-actions"><button class="btn" onClick=${() => M.open('class', { id: c.id })}><${Icon} n="edit" s=${14}/>Edit</button>
+          <button class="btn danger" onClick=${async () => { if (await M.del(`class “${c.name}”`, (st) => { st.classes = st.classes.filter((x) => x.id !== c.id); st.items.forEach((i) => { if (i.classId === c.id) i.classId = null; }); st.events.forEach((e) => { if (e.classId === c.id) e.classId = null; }); }, `Its ${items.length} assignments are kept but will no longer belong to a class.`)) M.go('homework'); }}><${Icon} n="trash" s=${14}/></button>
+          <button class="btn primary" onClick=${() => M.open('item', { preset: { kind: 'homework', classId: c.id } })}><${Icon} n="plus" s=${15}/>Assignment</button></div></div>
+      <div class="card pad mb16"><div class="stats"><div class="stat"><span class="v">${open.length}</span><span class="l">open</span></div><div class="stat"><span class="v ${open.some(M.isOverdue) ? 'danger-t' : ''}">${open.filter(M.isOverdue).length}</span><span class="l">overdue</span></div><div class="stat"><span class="v">${items.length - open.length}</span><span class="l">completed</span></div><div class="stat"><span class="v">${avg == null ? '—' : avg + '%'}</span><span class="l">average grade</span></div><div class="stat"><span class="v">${M.fmtDur(items.reduce((n, i) => n + (i.spent || 0), 0))}</span><span class="l">time spent</span></div></div></div>
+      <${Tabs} value=${tab} onChange=${(v) => M.setVs('classTab', v)} options=${[['assignments', 'Assignments', byType.assignments.filter((i) => i.status !== 'done').length], ['tests', 'Tests', byType.tests.filter((i) => i.status !== 'done').length], ['projects', 'Projects', byType.projects.filter((i) => i.status !== 'done').length], ['notes', 'Notes'], ['materials', 'Study materials'], ['dates', 'Important dates', dates.length]]}/>
+      ${tab === 'assignments' && list(byType.assignments, 'assignment', 'assignment')}${tab === 'tests' && list(byType.tests, 'test', 'test')}${tab === 'projects' && list(byType.projects, 'project', 'project')}
+      ${tab === 'notes' && html`<div class="grid2"><div class="card pad"><div class="card-t mb8">Class notes</div><textarea class="inp" rows="10" placeholder="Syllabus details, teacher expectations, formulas…" value=${c.notes || ''} onInput=${(e) => M.act(() => (c.notes = e.target.value))}></textarea></div>
+        <div class="card pad"><div class="card-h"><span class="card-t">Linked notes</span><span class="grow"></span><button class="btn sm" onClick=${() => { const n = { id: M.uid(), title: c.name + ' notes', body: '', folderId: 'inbox', pinned: false, tags: [c.name.toLowerCase().replace(/\s+/g, '-')], links: [{ type: 'class', id: c.id }], createdAt: Date.now(), updatedAt: Date.now() }; M.act((st) => { st.notes.push(n); st.view.noteId = n.id; }); M.go('notes'); }}><${Icon} n="plus" s=${13}/>New note</button></div>
+          ${notes.length === 0 ? html`<${Empty} sm title="No notes linked to this class"/>` : notes.map((n) => html`<div class="ag-row" onClick=${() => { M.setVs('noteId', n.id); M.go('notes'); }}><${Icon} n="file" s=${14}/><span class="grow trunc">${n.title || 'Untitled'}</span><span class="xs dim">${M.ago(n.updatedAt)}</span></div>`)}</div></div>`}
+      ${tab === 'materials' && html`<div class="card pad"><form class="row wrap mb12" onSubmit=${addMat}><input class="inp" style="flex:1;min-width:160px" placeholder="Title (e.g. Unit 3 study guide)" aria-label="Material title" value=${mt} onInput=${(e) => setMt(e.target.value)}/><input class="inp" style="flex:1;min-width:160px" placeholder="Link (optional)" aria-label="Material link" value=${mu} onInput=${(e) => setMu(e.target.value)}/><button class="btn primary" disabled=${!mt.trim()}>Add</button></form>
+        ${(c.materials || []).length === 0 ? html`<${Empty} sm title="No study materials yet" text="Save links to study guides, videos, slides or textbook pages."/>` : c.materials.map((m) => html`<div class="mini-row"><${Icon} n=${m.url ? 'link' : 'file'} s=${14}/>${m.url ? html`<a class="grow trunc" href=${m.url} target="_blank" rel="noopener noreferrer">${m.title}</a>` : html`<span class="grow trunc">${m.title}</span>`}<button class="ibtn sm x" aria-label="Remove" onClick=${() => M.act(() => (c.materials = c.materials.filter((x) => x.id !== m.id)))}><${Icon} n="x" s=${13}/></button></div>`)}</div>`}
+      ${tab === 'dates' && html`<div class="card pad"><div class="row mb12"><span class="sm muted grow">Class meetings, tests and major deadlines. These also appear on your calendar.</span><button class="btn sm" onClick=${() => M.open('event', { preset: { classId: c.id, categoryId: 'important', allDay: true, title: c.name + ': ' } })}><${Icon} n="plus" s=${13}/>Important date</button><button class="btn sm" onClick=${() => M.open('event', { preset: { classId: c.id, categoryId: 'school', title: c.name, location: c.room || '', rec: { freq: 'weekdays', interval: 1, days: [], until: null } } })}><${Icon} n="repeat" s=${13}/>Class time</button></div>
+        ${dates.length === 0 ? html`<${Empty} sm title="No upcoming dates"/>` : dates.map((x) => html`<div class="ag-row" onClick=${x.fn}><span class="tm" style="width:110px">${M.fmtDate(x.d)}</span><span class="grow trunc med">${x.title}</span><span class="xs muted">${x.sub}</span></div>`)}</div>`}
+    </div>`;
+  }
+
+  M.views.homework = function Homework() {
+    const s = M.state, r = M.ui.route, T = today();
+    if (r.a === 'class' && M.cls(r.b)) return html`<${ClassPage} c=${M.cls(r.b)}/>`;
+    const tab = M.vs('hwTab', 'overview'), all = hwAll(), open = all.filter((i) => i.status !== 'done').sort(M.itemCmp('due')), done = all.filter((i) => i.status === 'done').sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
+    const cf = M.vs('hwClass', ''), sort = M.vs('hwSort', 'due'); const wkEnd = addDays(T, 6);
+    const over = open.filter(M.isOverdue), td = open.filter((i) => i.due === T && !M.isOverdue(i)), tm = open.filter((i) => i.due === addDays(T, 1)), wk = open.filter((i) => i.due > addDays(T, 1) && i.due <= wkEnd), later = open.filter((i) => !i.due || i.due > wkEnd);
+    const stat = (n, l, tone, fn) => html`<button class="card pad hover stat" style="text-align:left" onClick=${fn}><span class="v ${n && tone ? tone : ''}">${n}</span><span class="l">${l}</span></button>`;
+    const classCard = (c) => { const its = all.filter((i) => i.classId === c.id), op = its.filter((i) => i.status !== 'done'), nx = op.filter((i) => i.due).sort(M.itemCmp('due'))[0]; const pct = its.length ? Math.round((its.reduce((n, i) => n + M.frac(i), 0) / its.length) * 100) : 0;
+      return html`<button class="card pad hover" style="text-align:left" key=${c.id} onClick=${() => M.go('homework', 'class', c.id)}><div class="row g12 mb12"><div class="class-ic" style=${`--c:${c.color}`}>${c.icon}</div><div class="grow" style="min-width:0"><b class="trunc" style="display:block">${c.name}</b><span class="xs muted">${op.length} open${op.some(M.isOverdue) ? ' · ' + op.filter(M.isOverdue).length + ' overdue' : ''}</span></div></div>
+        <div class="row mb8"><${Bar} pct=${pct} color=${c.color}/><span class="xs muted">${pct}%</span></div><div class="xs ${nx && M.urgency(nx) === 'over' ? 'danger-t' : 'muted'} trunc">${nx ? `Next: ${nx.title} · ${M.dueLabel(nx)}` : 'Nothing due'}</div></button>`; };
+    const filt = (arr) => (cf ? arr.filter((i) => i.classId === cf) : arr);
+    const noClass = !s.classes.length && html`<div class="note-box accent mb16"><${Icon} n="info" s=${15}/><div class="grow">Add your classes to organize assignments by subject, color and icon.</div><button class="btn sm primary" onClick=${() => M.open('class')}>Add a class</button></div>`;
+    const urg = { over: [], soon: [], near: [], week: [], later: [], none: [] }; open.forEach((i) => { const u = M.urgency(i); (u === 'over' ? urg.over : u === 'soon' ? urg.soon : u === 'near' ? urg.near : !i.due ? urg.none : i.due <= addDays(T, 7) ? urg.week : urg.later).push(i); });
+    return html`<div class="page"><${PageHead} title="Homework" sub=${`${open.length} open · ${over.length} overdue · ${done.length} completed`}>
+        <button class="btn" onClick=${() => M.open('class')}><${Icon} n="plus" s=${14}/>Class</button><button class="btn primary" onClick=${() => M.open('item', { preset: { kind: 'homework', classId: cf || null } })}><${Icon} n="plus" s=${15}/>Assignment</button><//>
+      <div class="row wrap mb16"><${Seg} value=${tab} onChange=${(v) => M.setVs('hwTab', v)} options=${[['overview', 'Overview', 'grid'], ['list', 'List', 'list'], ['board', 'Board', 'kanban'], ['calendar', 'Calendar', 'calendar'], ['classes', 'Classes', 'book'], ['priority', 'Priority', 'flag'], ['deadlines', 'Deadlines', 'clock']]}/>
+        <span class="grow"></span>${['list', 'board', 'priority', 'deadlines'].includes(tab) && s.classes.length > 0 && html`<select class="inp" style="width:auto" aria-label="Filter by class" value=${cf} onChange=${(e) => M.setVs('hwClass', e.target.value)}><option value="">All classes</option>${s.classes.map((c) => html`<option value=${c.id}>${c.icon} ${c.name}</option>`)}</select>`}
+        ${tab === 'list' && html`<select class="inp" style="width:auto" aria-label="Sort" value=${sort} onChange=${(e) => M.setVs('hwSort', e.target.value)}>${['due', 'priority', 'category', 'status', 'created'].map((k) => html`<option value=${k}>Sort: ${k === 'category' ? 'Class' : SORTS[k]}</option>`)}</select>`}</div>
+      ${noClass}
+      ${tab === 'overview' && html`<div class="col g16">
+        <div class="stats">${stat(over.length, 'Overdue', 'danger-t', () => M.setVs('hwTab', 'deadlines'))}${stat(td.length, 'Due today', 'warn-t', () => M.setVs('hwTab', 'deadlines'))}${stat(tm.length, 'Due tomorrow', '', () => M.setVs('hwTab', 'deadlines'))}${stat(wk.length, 'Later this week', '', () => M.setVs('hwTab', 'list'))}${stat(later.length, 'Upcoming', '', () => M.setVs('hwTab', 'list'))}${stat(done.length, 'Completed', 'ok-t', () => M.setVs('hwTab', 'board'))}</div>
+        ${all.length === 0 && html`<div class="card"><${Empty} icon="book" title="No homework yet" text="Add an assignment, break it into steps, and Meridian tracks the progress for you."><button class="btn primary" onClick=${() => M.open('item', { preset: { kind: 'homework' } })}>Add your first assignment</button><//></div>`}
+        <div class="grid2"><div class="col g16"><${Section} title="Overdue" items=${over} tone="danger-t"/><${Section} title="Due today" items=${td} tone="warn-t" empty=${all.length ? 'Nothing due today.' : ''}/><${Section} title="Due tomorrow" items=${tm}/></div>
+          <div class="col g16"><${Section} title="Later this week" items=${wk}/><${Section} title="Upcoming" items=${later.slice(0, 8)}/><${Section} title="Recently completed" items=${done.slice(0, 5)}/></div></div>
+        ${s.classes.length > 0 && html`<div><div class="up mb8">By class</div><div class="grid-cards">${s.classes.map(classCard)}</div></div>`}</div>`}
+      ${tab === 'list' && html`<div class="card pad">${filt(all).length === 0 ? html`<${Empty} icon="book" title="No assignments"/>` : grouped(filt(open).sort(M.itemCmp(sort)), sort === 'created' ? 'manual' : sort).map((g) => html`<div>${g.k && html`<div class="group-h ${g.k === 'Overdue' ? 'danger-t' : ''}">${g.k}<span class="cnt">${g.items.length}</span></div>`}<div class="list">${g.items.map((it) => html`<${ItemRow} it=${it} key=${it.id}/>`)}</div></div>`)}
+        ${filt(done).length > 0 && html`<div class="group-h">Completed<span class="cnt">${filt(done).length}</span></div><div class="list">${filt(done).slice(0, 30).map((it) => html`<${ItemRow} it=${it} key=${it.id}/>`)}</div>`}</div>`}
+      ${tab === 'board' && html`<${M.Kanban} items=${filt(all)} extra=${html`<button class="btn sm ghost" onClick=${() => M.open('item', { preset: { kind: 'homework', classId: cf || null } })}><${Icon} n="plus" s=${13}/>Add assignment</button>`}/>`}
+      ${tab === 'calendar' && html`<${HwCalendar}/>`}
+      ${tab === 'classes' && html`<div class="grid-cards">${s.classes.map(classCard)}<button class="card pad hover center col" style="min-height:120px;border-style:dashed;color:var(--text2);align-items:center;justify-content:center" onClick=${() => M.open('class')}><${Icon} n="plus" s=${20}/>Add a class</button></div>`}
+      ${tab === 'priority' && html`<div class="grid2">${M.PRI_KEYS.map((k) => { const its = filt(open).filter((i) => i.priority === k); return html`<div class="card pad"><div class="card-h"><i class="dot" style=${`--c:${M.PRI[k].color};width:10px;height:10px`}></i><span class="card-t">${M.PRI[k].label}</span><span class="pill">${its.length}</span></div>${its.length ? html`<div class="list">${its.map((it) => html`<${ItemRow} it=${it} key=${it.id}/>`)}</div>` : html`<div class="sm dim">Nothing at this priority.</div>`}</div>`; })}</div>`}
+      ${tab === 'deadlines' && html`<div class="col g16">
+        ${filt(open).filter((i) => isMajor(i) && i.due && i.due <= addDays(T, 21)).length > 0 && html`<div class="card pad" style="border-color:var(--accent-mid)"><div class="card-h"><span class="card-t accent-t"><${Icon} n="star" s=${15}/>Major projects & tests in the next 3 weeks</span></div><div class="list">${filt(open).filter((i) => isMajor(i) && i.due && i.due <= addDays(T, 21)).map((it) => html`<${ItemRow} it=${it} key=${it.id}/>`)}</div></div>`}
+        <${Section} title="Overdue" items=${filt(urg.over)} tone="danger-t"/><${Section} title="Due within 24 hours" items=${filt(urg.soon)} tone="warn-t" empty="Nothing due in the next 24 hours."/><${Section} title="Due within 3 days" items=${filt(urg.near)}/><${Section} title="Within a week" items=${filt(urg.week)}/><${Section} title="Later" items=${filt(urg.later)}/><${Section} title="No due date" items=${filt(urg.none)}/></div>`}
+    </div>`;
+  };
+})();
