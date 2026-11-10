@@ -1,0 +1,120 @@
+/* Meridian — Focus timer, Focus Mode overlay, Notes */
+(function () {
+  const M = window.M;
+  const { html, useState, useEffect, Icon, Menu, PageHead, Empty, Seg, Ring } = M;
+  const { addDays, today } = M;
+
+  M.useTick = (ms = 500) => { const [, t] = useState(0); useEffect(() => { const i = setInterval(() => t((x) => x + 1), ms); return () => clearInterval(i); }, [ms]); };
+  M.fmtClock = (ms) => { const s = Math.ceil(ms / 1000); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return (h ? h + ':' + M.pad(m) : m) + ':' + M.pad(s % 60); };
+  const PHASE = { work: 'Focus', short: 'Short break', long: 'Long break' };
+  const QUOTES = ['One thing at a time.', 'Small steps still move you forward.', 'Start where you are.', 'Progress, not perfection.', 'Deep work now, free time later.', 'You only need to do the next step.', 'Slow is smooth. Smooth is fast.', 'Future you will be glad you did this.'];
+
+  const Controls = ({ big }) => {
+    const f = M.state.focus, cls = big ? 'btn lg' : 'btn';
+    if (!f.active) return html`<button class="${cls} primary" onClick=${() => M.focusStart({})}><${Icon} n="play" s=${15}/>Start ${f.mode === 'custom' ? (f.customMin || 30) + ' min' : 'focus'}</button>`;
+    return html`${f.running ? html`<button class="${cls} primary" onClick=${M.focusPause}><${Icon} n="pause" s=${15}/>Pause</button>` : html`<button class="${cls} primary" onClick=${M.focusResume}><${Icon} n="play" s=${15}/>${f.remaining === f.total ? 'Start ' + PHASE[f.phase].toLowerCase() : 'Resume'}</button>`}
+      ${f.mode === 'pomodoro' && html`<button class=${cls} onClick=${M.focusSkip}><${Icon} n="skip" s=${15}/>Skip</button>`}
+      <button class=${cls} onClick=${M.focusEnd}><${Icon} n="stop" s=${14}/>End</button>`;
+  };
+  M.TimerChip = function TimerChip() {
+    M.useTick(500); const f = M.state.focus; if (!f.active) return null;
+    return html`<button class="timer-chip ${f.phase !== 'work' ? 'break' : ''}" title="Open focus mode" onClick=${() => M.setUI({ focusOverlay: true })}><${Icon} n=${f.running ? 'timer' : 'pause'} s=${14}/>${M.fmtClock(M.focusLeft())}</button>`;
+  };
+  M.FocusOverlay = function FocusOverlay() {
+    M.useTick(250); const f = M.state.focus, it = f.itemId && M.item(f.itemId), left = M.focusLeft(), pct = f.total ? (1 - left / f.total) * 100 : 0;
+    const [q] = useState(() => QUOTES[Math.floor(Math.random() * QUOTES.length)]);
+    useEffect(() => { const k = (e) => { if (e.key === 'Escape') M.setUI({ focusOverlay: false }); if (e.key === ' ' && e.target === document.body) { e.preventDefault(); f.running ? M.focusPause() : f.active && M.focusResume(); } }; window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k); });
+    const steps = it ? M.leaves(it.subtasks).filter((x) => !x.done).slice(0, 3) : [];
+    return html`<div class="focus-ov" role="dialog" aria-modal="true" aria-label="Focus mode">
+      <button class="btn ghost" style="position:absolute;top:18px;right:18px" onClick=${() => M.setUI({ focusOverlay: false })}><${Icon} n="x" s=${15}/>Exit focus mode</button>
+      <div><div class="up mb8">${f.active ? PHASE[f.phase] + (f.mode === 'pomodoro' ? ` · round ${f.round} of ${M.state.settings.pomodoro.rounds}` : '') : 'Ready when you are'}</div>
+        <div class="serif" style="font-size:30px;max-width:720px">${it ? it.title : f.phase === 'work' ? 'Focus session' : 'Take a breather'}</div>
+        ${it && it.due && html`<div class="sm muted mt4">Due ${M.dueLabel(it)}</div>`}</div>
+      <div class="big">${f.active ? M.fmtClock(left) : M.fmtClock((f.mode === 'custom' ? f.customMin || 30 : M.state.settings.pomodoro.work) * 60000)}</div>
+      <div style="width:min(420px,80vw)"><${M.Bar} pct=${pct} color=${f.phase === 'work' ? 'var(--accent)' : 'var(--ok)'}/></div>
+      <div class="row wrap center"><${Controls} big/></div>
+      ${steps.length > 0 && f.phase === 'work' && html`<div class="card pad" style="text-align:left;width:min(420px,90vw)"><div class="up mb8">Next steps</div>${steps.map((s) => html`<label class="mini-row" style="cursor:pointer"><${M.Check} sq sm on=${false} onClick=${() => M.toggleSub(it, s)}/><span class="grow">${s.title}</span></label>`)}</div>`}
+      ${it && f.phase === 'work' && html`<button class="btn ghost sm" onClick=${() => { M.setStatus(it, 'done'); M.focusEnd(); M.setUI({ focusOverlay: false }); }}><${Icon} n="check" s=${13}/>Mark “${it.title.slice(0, 40)}” complete and end</button>`}
+      ${M.state.settings.motivate && html`<div class="serif dim" style="font-size:20px;font-style:italic">${q}</div>`}
+    </div>`;
+  };
+
+  M.views.focus = function Focus() {
+    M.useTick(500); const s = M.state, f = s.focus, P = s.settings.pomodoro, T = today(), it = f.itemId && M.item(f.itemId);
+    const left = f.active ? M.focusLeft() : (f.mode === 'custom' ? f.customMin || 30 : P.work) * 60000, total = f.active ? f.total : left;
+    const sessions = s.focusSessions.slice().sort((a, b) => b.at - a.at); const tMin = M.focusMinOn(T);
+    const week = []; for (let i = 6; i >= 0; i--) { const d = addDays(T, -i); week.push({ label: M.DOWS[M.dow(d)], value: M.focusMinOn(d), dim: d !== T }); }
+    const setP = (k, v) => M.act((st) => (st.settings.pomodoro[k] = v)); const numIn = (k, min, max) => html`<input class="inp sm" type="number" style="width:72px" min=${min} max=${max} aria-label=${k} value=${P[k]} onInput=${(e) => { const n = parseInt(e.target.value, 10); if (!isNaN(n)) setP(k, M.clamp(n, min, max)); }}/>`;
+    const opts = M.open_().sort((a, b) => (a.due || '9').localeCompare(b.due || '9'));
+    const byDay = {}; sessions.slice(0, 60).forEach((x) => (byDay[x.date] = byDay[x.date] || []).push(x));
+    return html`<div class="page"><${PageHead} title="Focus" sub=${`${M.fmtDur(tMin)} focused today · ${s.focusSessions.filter((x) => x.date === T).length} sessions`}><button class="btn" onClick=${() => M.setUI({ focusOverlay: true })}><${Icon} n="expand" s=${14}/>Focus mode</button><//>
+      <div class="split"><div class="col g16">
+        <div class="card pad center col" style="align-items:center;gap:18px;padding:28px 18px">
+          <${Seg} value=${f.mode} onChange=${(v) => { if (f.active) return M.toast('End the current session to switch timer type.'); M.act(() => (f.mode = v)); }} options=${[['pomodoro', 'Pomodoro'], ['custom', 'Custom countdown']]}/>
+          <${Ring} pct=${total ? (1 - left / total) * 100 : 0} size=${230} stroke=${12} color=${f.phase === 'work' || !f.active ? 'var(--accent)' : 'var(--ok)'}><div><div class="up">${f.active ? PHASE[f.phase] : 'Ready'}</div><div class="serif tnum" style="font-size:58px;line-height:1.05">${M.fmtClock(left)}</div>${f.mode === 'pomodoro' && html`<div class="xs dim">Round ${f.active ? f.round : 1} of ${P.rounds}</div>`}</div><//>
+          ${f.mode === 'custom' && !f.active && html`<div class="row wrap center">${[10, 15, 30, 45, 60, 90].map((m) => html`<button class="pill ${(f.customMin || 30) === m ? 'accent' : ''}" onClick=${() => M.act(() => (f.customMin = m))}>${m} min</button>`)}<input class="inp sm" type="number" min="1" max="600" style="width:76px" aria-label="Custom minutes" value=${f.customMin || 30} onInput=${(e) => { const n = parseInt(e.target.value, 10); if (!isNaN(n)) M.act(() => (f.customMin = M.clamp(n, 1, 600))); }}/></div>`}
+          <div class="row wrap center"><${Controls}/></div>
+          <div style="width:min(420px,100%)"><span class="lbl">Working on</span><select class="inp mt4" aria-label="Task to focus on" value=${f.itemId || ''} onChange=${(e) => M.act(() => (f.itemId = e.target.value || null))}><option value="">No specific task</option>${opts.map((i) => html`<option value=${i.id}>${i.kind === 'homework' ? '📚 ' : ''}${i.title}${i.due ? ' — ' + M.relDate(i.due) : ''}</option>`)}</select>
+            ${it && html`<div class="xs muted mt4">${M.fmtDur(it.spent || 0)} spent so far${it.estimate ? ' of ' + M.fmtDur(it.estimate) + ' estimated' : ''}. Finished sessions add to this automatically.</div>`}</div>
+        </div>
+        <div class="card pad"><div class="card-t mb8"><${Icon} n="sliders" s=${15}/>Timer settings</div>
+          <div class="set-row"><div class="grow"><b>Focus length</b><span>Minutes per Pomodoro work session</span></div>${numIn('work', 1, 180)}</div>
+          <div class="set-row"><div class="grow"><b>Short break</b><span>Minutes</span></div>${numIn('short', 1, 60)}</div>
+          <div class="set-row"><div class="grow"><b>Long break</b><span>Minutes, after the final round</span></div>${numIn('long', 1, 90)}</div>
+          <div class="set-row"><div class="grow"><b>Rounds before a long break</b></div>${numIn('rounds', 1, 12)}</div>
+          <div class="set-row"><div class="grow"><b>Auto-start next phase</b><span>Begin breaks and sessions without pressing start</span></div><${M.Switch} on=${P.autoNext} onChange=${(v) => setP('autoNext', v)}/></div>
+          <div class="set-row"><div class="grow"><b>Motivational message</b><span>Show a short line in focus mode</span></div><${M.Switch} on=${s.settings.motivate} onChange=${(v) => M.act((st) => (st.settings.motivate = v))}/></div></div>
+      </div>
+      <div class="col g16">
+        <div class="card pad"><div class="card-h"><span class="card-t"><${Icon} n="chart" s=${15}/>Last 7 days</span><span class="grow"></span><span class="sm muted">${M.fmtDur(week.reduce((n, x) => n + x.value, 0))} total</span></div><${M.Bars} data=${week} h=${120} fmt=${(v) => M.fmtDur(v)}/></div>
+        <div class="card pad"><div class="card-h"><span class="card-t"><${Icon} n="clock" s=${15}/>Focus history</span><span class="grow"></span>${sessions.length > 0 && html`<button class="btn sm ghost danger" onClick=${() => M.del('all focus history', (st) => (st.focusSessions = []), 'Time already added to tasks is not changed.')}>Clear</button>`}</div>
+          ${sessions.length === 0 ? html`<${Empty} sm icon="timer" title="No sessions yet" text="Start a timer — completed sessions are logged here and added to the task you were working on."/>` : Object.keys(byDay).map((d) => html`<div><div class="group-h" style="padding-left:0">${M.relDate(d)}<span class="cnt">${M.fmtDur(byDay[d].reduce((n, x) => n + x.minutes, 0))}</span></div>
+            ${byDay[d].map((x) => { const t = x.itemId && M.item(x.itemId), dt = new Date(x.at); return html`<div class="mini-row sm"><i class="dot" style=${`--c:${t ? M.itemColor(t) : 'var(--text3)'}`}></i><span class="grow trunc" style=${t ? 'cursor:pointer' : ''} onClick=${() => t && M.open('item', { id: t.id })}>${t ? t.title : 'General focus'}</span><span class="dim">${M.fmtTime(M.pad(dt.getHours()) + ':' + M.pad(dt.getMinutes()), true)}</span><b>${M.fmtDur(x.minutes)}</b><button class="ibtn sm x" aria-label="Delete session" onClick=${() => M.act((st) => { st.focusSessions = st.focusSessions.filter((y) => y.id !== x.id); if (t) t.spent = Math.max(0, (t.spent || 0) - x.minutes); })}><${Icon} n="x" s=${13}/></button></div>`; })}</div>`)}</div>
+      </div></div></div>`;
+  };
+
+  /* ---------- Notes ---------- */
+  M.views.notes = function Notes() {
+    const s = M.state, [q, setQ] = useState(''), [tagIn, setTagIn] = useState(''); const filt = M.vs('noteFilter', 'all'), cur = s.notes.find((n) => n.id === M.vs('noteId', null));
+    const [fk, fv] = filt.split(':'); const tags = [...new Set(s.notes.flatMap((n) => n.tags || []))].sort();
+    let list = s.notes.filter((n) => (fk === 'folder' ? n.folderId === fv : fk === 'tag' ? (n.tags || []).includes(fv) : fk === 'pinned' ? n.pinned : true));
+    if (q) list = list.filter((n) => (n.title + ' ' + n.body + ' ' + (n.tags || []).join(' ')).toLowerCase().includes(q.toLowerCase()));
+    list.sort((a, b) => b.pinned - a.pinned || b.updatedAt - a.updatedAt);
+    const upd = (fn) => M.act(() => { fn(cur); cur.updatedAt = Date.now(); });
+    const create = () => { const n = { id: M.uid(), title: '', body: '', folderId: fk === 'folder' ? fv : 'inbox', pinned: false, tags: fk === 'tag' ? [fv] : [], links: [], createdAt: Date.now(), updatedAt: Date.now() }; M.act((st) => { st.notes.push(n); st.view.noteId = n.id; }); };
+    const nav = (k, label, icon, n) => html`<button class=${filt === k ? 'on' : ''} onClick=${() => M.setVs('noteFilter', k)}><${Icon} n=${icon} s=${15}/><span class="trunc">${label}</span>${n > 0 && html`<span class="cnt">${n}</span>`}</button>`;
+    const addTag = () => { const t = tagIn.trim().replace(/^#/, '').toLowerCase().replace(/\s+/g, '-'); if (t && !cur.tags.includes(t)) upd(() => cur.tags.push(t)); setTagIn(''); };
+    const linkLabel = (l) => l.type === 'item' ? (M.item(l.id) || {}).title : l.type === 'project' ? (M.project(l.id) || {}).title : l.type === 'class' ? (M.cls(l.id) || {}).name : null;
+    const openLink = (l) => l.type === 'item' ? M.open('item', { id: l.id }) : l.type === 'project' ? M.go('projects', l.id) : M.go('homework', 'class', l.id);
+    const has = (id) => cur.links.some((l) => l.id === id); const addLink = (type, id) => upd(() => cur.links.push({ type, id }));
+    const linkMenu = () => [{ h: 'Tasks & assignments' }, ...M.open_().filter((i) => !has(i.id)).sort((a, b) => (a.due || '9').localeCompare(b.due || '9')).slice(0, 8).map((i) => ({ label: i.title.slice(0, 36), icon: i.kind === 'homework' ? 'book' : 'checkCircle', fn: () => addLink('item', i.id) })),
+      s.projects.length && { h: 'Projects' }, ...s.projects.filter((p) => !has(p.id)).map((p) => ({ label: p.title.slice(0, 36), icon: 'layers', fn: () => addLink('project', p.id) })),
+      s.classes.length && { h: 'Classes' }, ...s.classes.filter((c) => !has(c.id)).map((c) => ({ label: c.icon + ' ' + c.name, fn: () => addLink('class', c.id) }))];
+    const folder = fk === 'folder' && s.folders.find((x) => x.id === fv);
+    return html`<div class="page"><${PageHead} title="Notes" sub=${`${s.notes.length} ${s.notes.length === 1 ? 'note' : 'notes'}`}><button class="btn" onClick=${() => M.open('capture')}><${Icon} n="zap" s=${14}/>Quick capture</button><button class="btn primary" onClick=${create}><${Icon} n="plus" s=${15}/>New note</button><//>
+      <div class="split side-l">
+        <nav class="side-nav" aria-label="Note folders">${nav('all', 'All notes', 'file', s.notes.length)}${nav('pinned', 'Pinned', 'pin', s.notes.filter((n) => n.pinned).length)}
+          <h5>Folders<span class="grow"></span><button class="ibtn sm" aria-label="New folder" onClick=${() => M.ask({ title: 'New folder', label: 'Folder name', onSave: (v) => { const f = { id: M.uid(), name: v }; M.act((st) => { st.folders.push(f); st.view.noteFilter = 'folder:' + f.id; }); } })}><${Icon} n="plus" s=${13}/></button></h5>
+          ${s.folders.map((f) => nav('folder:' + f.id, f.name, f.id === 'inbox' ? 'inbox' : 'folder', s.notes.filter((n) => n.folderId === f.id).length))}
+          ${tags.length > 0 && html`<h5>Tags</h5>`}${tags.map((t) => nav('tag:' + t, t, 'tag', s.notes.filter((n) => (n.tags || []).includes(t)).length))}</nav>
+        <div class="notes-split">
+          <div class="card pad" style="padding:10px;min-width:0"><div class="row mb8"><div class="tb-search grow" style="height:32px;box-shadow:none;width:auto"><${Icon} n="search" s=${14}/><input style="border:0;outline:0;background:transparent;width:100%;color:var(--text)" placeholder="Search notes" aria-label="Search notes" value=${q} onInput=${(e) => setQ(e.target.value)}/></div>
+              ${folder && folder.id !== 'inbox' && html`<${Menu} trigger=${html`<button class="ibtn sm" aria-label="Folder actions"><${Icon} n="more" s=${15}/></button>`} items=${[{ label: 'Rename folder', icon: 'edit', fn: () => M.ask({ title: 'Rename folder', label: 'Name', value: folder.name, onSave: (v) => M.act(() => (folder.name = v)) }) }, { label: 'Delete folder', icon: 'trash', danger: true, fn: () => M.del(`folder “${folder.name}”`, (st) => { st.notes.forEach((n) => { if (n.folderId === folder.id) n.folderId = 'inbox'; }); st.folders = st.folders.filter((x) => x.id !== folder.id); st.view.noteFilter = 'all'; }, 'Its notes move to Inbox.') }]}/>`}</div>
+            ${list.length === 0 ? html`<${Empty} sm icon="file" title=${q ? 'No notes match' : 'No notes here'} text=${q ? '' : 'Create a note or use quick capture.'}/>` : list.map((n) => html`<button key=${n.id} class="item" style="width:100%;text-align:left;${cur && cur.id === n.id ? 'background:var(--accent-soft)' : ''}" onClick=${() => M.setVs('noteId', n.id)}><div class="item-main"><div class="item-title row g4">${n.pinned && html`<${Icon} n="pin" s=${12} c="accent-t"/>`}<span class="trunc">${n.title || 'Untitled note'}</span></div><div class="xs muted trunc">${n.body.split('\n')[0] || 'No additional text'}</div><div class="xxs dim mt4">${M.ago(n.updatedAt)}${(n.tags || []).length ? ' · ' + n.tags.map((t) => '#' + t).join(' ') : ''}</div></div></button>`)}</div>
+          ${!cur ? html`<div class="card"><${Empty} icon="file" title="Select a note" text="Or create a new one. Notes can be pinned, tagged, filed in folders and linked to tasks, assignments, projects and classes."><button class="btn primary" onClick=${create}>New note</button><//></div>` : html`<div class="card pad col g12" style="min-width:0" key=${cur.id}>
+            <div class="row"><input class="title-inp" placeholder="Title" aria-label="Note title" value=${cur.title} onInput=${(e) => upd(() => (cur.title = e.target.value))} ref=${(el) => el && !cur.title && !cur.body && !el._f && ((el._f = 1), setTimeout(() => el.focus(), 60))}/>
+              <button class="ibtn ${cur.pinned ? 'on' : ''}" title=${cur.pinned ? 'Unpin' : 'Pin'} aria-label="Pin note" aria-pressed=${cur.pinned} onClick=${() => upd(() => (cur.pinned = !cur.pinned))}><${Icon} n="pin"/></button>
+              <${Menu} trigger=${html`<button class="ibtn" aria-label="Note actions"><${Icon} n="more"/></button>`} items=${[
+                { label: 'Turn into a task', icon: 'checkCircle', fn: () => { const it = M.addItem({ title: cur.title || 'Untitled', notes: cur.body }); upd(() => cur.links.push({ type: 'item', id: it.id })); M.open('item', { id: it.id }); } },
+                { label: 'Duplicate', icon: 'copy', fn: () => { const n = { ...M.clone(cur), id: M.uid(), title: cur.title + ' (copy)', createdAt: Date.now(), updatedAt: Date.now() }; M.act((st) => { st.notes.push(n); st.view.noteId = n.id; }); } },
+                { label: 'Delete note', icon: 'trash', danger: true, fn: () => M.del(`“${cur.title || 'Untitled note'}”`, (st) => { st.notes = st.notes.filter((n) => n.id !== cur.id); st.view.noteId = null; }) }]}/></div>
+            <div class="row wrap g6"><select class="inp sm" style="width:auto" aria-label="Folder" value=${cur.folderId} onChange=${(e) => upd(() => (cur.folderId = e.target.value))}>${s.folders.map((f) => html`<option value=${f.id}>${f.name}</option>`)}</select>
+              ${cur.tags.map((t) => html`<span class="pill accent">#${t}<button aria-label=${'Remove tag ' + t} onClick=${() => upd(() => (cur.tags = cur.tags.filter((x) => x !== t)))}><${Icon} n="x" s=${11}/></button></span>`)}
+              <form onSubmit=${(e) => { e.preventDefault(); addTag(); }}><input class="inp sm bare" style="width:96px" placeholder="+ tag" aria-label="Add tag" value=${tagIn} onInput=${(e) => setTagIn(e.target.value)} onBlur=${addTag}/></form></div>
+            <textarea class="inp" style="min-height:340px;border-color:transparent;padding:4px 0;box-shadow:none;font-size:15px;line-height:1.65;background:transparent" placeholder="Start writing…" aria-label="Note body" value=${cur.body} onInput=${(e) => upd(() => (cur.body = e.target.value))}></textarea>
+            <div class="row wrap g6" style="border-top:1px solid var(--line);padding-top:12px"><span class="xs muted"><${Icon} n="link" s=${13}/></span>
+              ${cur.links.filter(linkLabel).map((l) => html`<span class="pill"><button onClick=${() => openLink(l)}>${linkLabel(l)}</button><button aria-label="Remove link" onClick=${() => upd(() => (cur.links = cur.links.filter((x) => x.id !== l.id)))}><${Icon} n="x" s=${11}/></button></span>`)}
+              <${Menu} align="left" trigger=${html`<button class="btn sm ghost"><${Icon} n="plus" s=${13}/>Link to…</button>`} items=${linkMenu}/><span class="grow"></span><span class="xxs dim">Edited ${M.ago(cur.updatedAt)} · saved automatically</span></div></div>`}
+        </div></div></div>`;
+  };
+})();
