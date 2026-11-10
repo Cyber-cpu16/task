@@ -1,0 +1,179 @@
+/* Meridian — Dashboard and My Day */
+(function () {
+  const M = window.M;
+  const { html, useState, useEffect, Icon, Menu, PageHead, ItemRow, Empty, Bar, Ring } = M;
+  const { addDays, today } = M;
+
+  // quick add from a typed line, defaulting to a given day
+  M.quickCreate = (text, defaults = {}) => {
+    const p = M.parseQuick(text);
+    if (p.kind === 'event') { const e = M.addEvent({ title: p.title, date: p.due || defaults.date || today(), start: p.time || '09:00', end: p.end || M.tstr(Math.min(M.mins(p.time || '09:00') + 60, 1439)) }); M.toast(`Event added ${M.relDate(e.date).toLowerCase()} at ${M.fmtTime(e.start)}.`); return e; }
+    if (p.kind === 'reminder') { const r = { id: M.uid(), title: p.title, at: (p.due || today()) + 'T' + (p.time || '09:00'), repeat: 'none', priority: p.priority || 'medium', done: false, fired: false }; M.act((s) => s.reminders.push(r)); M.toast(`Reminder set for ${M.fmtStamp(r.at)}.`); return r; }
+    if (p.kind === 'note') { M.act((s) => s.notes.push({ id: M.uid(), title: p.title, body: '', folderId: 'inbox', pinned: false, tags: [], links: [], createdAt: Date.now(), updatedAt: Date.now() })); M.toast('Note saved to Inbox.'); return; }
+    return M.addItem({ kind: p.kind, title: p.title || text, due: p.due, dueTime: p.due ? p.time : null, priority: p.priority || 'medium', classId: p.classId, categoryId: p.categoryId || (p.kind === 'task' ? defaults.categoryId || null : null), ...(defaults.plan ? { plannedDate: defaults.plan } : {}), ...defaults.item });
+  };
+
+  function Clock() {
+    const [, t] = useState(0); useEffect(() => { const i = setInterval(() => t((x) => x + 1), 1000); return () => clearInterval(i); }, []);
+    const d = new Date(), h24 = M.state.settings.time24; let h = d.getHours(); const ap = h >= 12 ? 'PM' : 'AM'; if (!h24) h = h % 12 || 12;
+    return html`<div class="clock" aria-label="Current time">${h24 ? M.pad(h) : h}:${M.pad(d.getMinutes())}<small>${M.pad(d.getSeconds())}${h24 ? '' : ' ' + ap}</small></div>`;
+  }
+  const nextUp = () => {
+    const T = today(), nm = M.nowMin(); const out = [];
+    const ev = M.timedOn(T).find((i) => M.mins(i.ev.start) > nm) || M.timedOn(addDays(T, 1))[0];
+    if (ev) { const ts = new Date(ev.date + 'T' + ev.ev.start + ':00').getTime(); out.push({ icon: 'calendar', text: `${ev.ev.title} in ${M.countdown(ts)}`, fn: () => M.open('event', { id: ev.ev.id, date: ev.date }) }); }
+    const dl = M.open_().filter((i) => i.due && M.dueTs(i) > Date.now()).sort((a, b) => M.dueTs(a) - M.dueTs(b))[0];
+    if (dl) out.push({ icon: 'flag', text: `${dl.title} due in ${M.countdown(M.dueTs(dl))}`, fn: () => M.open('item', { id: dl.id }) });
+    return out;
+  };
+
+  const W = {};
+  W.quick = () => html`<div class="qa">${[
+    ['Task', 'checkCircle', '#2F80ED', () => M.open('item', { preset: { plannedDate: today() } })], ['Homework', 'book', '#D6497F', () => M.open('item', { preset: { kind: 'homework' } })],
+    ['Reminder', 'bell', '#D98A1F', () => M.open('reminder')], ['Event', 'calendar', '#5E6AD2', () => M.open('event')],
+    ['Project', 'layers', '#8E5BD9', () => M.open('project')], ['Start timer', 'timer', '#0E9F8E', () => { if (!M.state.focus.active) M.focusStart({ itemId: null }); M.setUI({ focusOverlay: true }); }],
+    ['Plan my day', 'sun', '#E5604C', () => { M.ui.dayDate = today(); M.go('myday'); }], ['Quick note', 'file', '#4B5563', () => M.open('capture')],
+  ].map(([l, ic, c, fn]) => html`<button style=${`--c:${c}`} onClick=${fn}><span class="qi"><${Icon} n=${ic} s=${16}/></span>${l}</button>`)}</div>`;
+  W.insights = () => {
+    const ins = M.insights();
+    if (!ins.length) return html`<div class="insight"><div class="ii" style="background:color-mix(in srgb,var(--ok) 14%,transparent);color:var(--ok)"><${Icon} n="checkCircle" s=${16}/></div><div><b>You're on track</b><div class="sm muted">No overdue work, conflicts or overloaded days right now.</div></div></div>`;
+    return html`<div class="ins-grid">${ins.slice(0, 6).map((i) => html`<div class="insight ${i.tone}" key=${i.id}><div class="ii"><${Icon} n=${i.icon} s=${16}/></div><div class="grow" style="min-width:0"><b>${i.title}</b><div class="sm muted">${i.text}</div><div class="row mt8 wrap">${i.actions.map((a, n) => html`<button class="btn sm ${n === 0 ? 'soft' : 'ghost'}" onClick=${a.fn}>${a.label}</button>`)}</div></div></div>`)}</div>`;
+  };
+  W.schedule = () => {
+    const T = today(), evs = M.eventsOn(T), nm = M.nowMin(), conf = M.conflictsOn(T).length;
+    return html`<div class="card-h"><span class="card-t"><${Icon} n="clock" s=${15}/>Today's schedule</span>${conf > 0 && html`<span class="pill warn">${conf} ${conf === 1 ? 'conflict' : 'conflicts'}</span>`}<span class="grow"></span><button class="btn sm ghost" onClick=${() => { M.ui.dayDate = T; M.go('myday'); }}>Open day<${Icon} n="chevR" s=${13}/></button></div>
+      ${evs.length === 0 ? html`<${Empty} sm title="Nothing scheduled today" text="Build an hour-by-hour plan or apply a template."><button class="btn sm primary" onClick=${() => M.go('myday')}>Create schedule</button><button class="btn sm" onClick=${() => M.open('templates', { date: T })}>Templates</button><//>` :
+        html`<div class="col g2">${evs.map((i) => { const past = !i.ev.allDay && M.mins(i.ev.end) <= nm, now = !i.ev.allDay && M.mins(i.ev.start) <= nm && M.mins(i.ev.end) > nm; return html`<div class="ag-row" style=${past ? 'opacity:.5' : ''} onClick=${() => M.open('event', { id: i.ev.id, date: T })}><i class="dot" style=${`--c:${M.eventColor(i.ev)}`}></i><span class="tm" style="width:118px">${i.ev.allDay ? 'All day' : M.fmtTime(i.ev.start) + ' – ' + M.fmtTime(i.ev.end)}</span><span class="grow trunc med" style=${M.evDone(i.ev) ? 'text-decoration:line-through' : ''}>${i.ev.title}</span>${now && html`<span class="pill accent">Now</span>`}</div>`; })}</div>`}`;
+  };
+  W.tasks = () => {
+    const T = today(), items = M.dayItems(T), st = M.dayStats(T), open = items.filter((i) => i.status !== 'done'), done = items.filter((i) => i.status === 'done');
+    return html`<div class="card-h"><span class="card-t"><${Icon} n="checkCircle" s=${15}/>Today's tasks</span><span class="xs muted">${st.done}/${st.total}</span><span class="grow"></span><button class="btn sm ghost" onClick=${() => M.go('tasks')}>All tasks<${Icon} n="chevR" s=${13}/></button></div>
+      ${items.length > 0 && html`<${Bar} pct=${st.pct} cls="thin"/>`}
+      <div class="list mt8">${open.slice(0, 7).map((it) => html`<${ItemRow} it=${it} key=${it.id}/>`)}${open.length > 7 && html`<button class="btn sm ghost" onClick=${() => M.go('myday')}>+${open.length - 7} more</button>`}
+        ${done.slice(0, 3).map((it) => html`<${ItemRow} it=${it} key=${it.id}/>`)}</div>
+      ${items.length === 0 && html`<${Empty} sm title="No tasks planned for today" text="Add one below, or pull something in from your lists."/>`}
+      <div class="mt8"><${M.QuickAdd} placeholder="Add a task for today…" onAdd=${(t) => M.quickCreate(t, { plan: T })}/></div>`;
+  };
+  W.homework = () => {
+    const T = today(), hw = M.open_().filter((i) => i.kind === 'homework'), over = hw.filter(M.isOverdue), soon = hw.filter((i) => !M.isOverdue(i) && i.due && i.due <= addDays(T, 7)).sort((a, b) => M.dueTs(a) - M.dueTs(b));
+    return html`<div class="card-h"><span class="card-t"><${Icon} n="book" s=${15}/>Homework</span>${over.length > 0 && html`<span class="pill danger">${over.length} overdue</span>`}<span class="grow"></span><button class="btn sm ghost" onClick=${() => M.go('homework')}>Open<${Icon} n="chevR" s=${13}/></button></div>
+      ${over.length + soon.length === 0 ? html`<${Empty} sm title="No assignments due this week" text=${hw.length ? `${hw.length} upcoming later.` : 'Add homework to see it here.'}><button class="btn sm primary" onClick=${() => M.open('item', { preset: { kind: 'homework' } })}>Add homework</button><//>` :
+        html`<div class="list">${[...over, ...soon].slice(0, 7).map((it) => html`<${ItemRow} it=${it} key=${it.id}/>`)}</div>`}`;
+  };
+  W.progress = () => {
+    const T = today(), st = M.dayStats(T); const hwAll = M.live().filter((i) => i.kind === 'homework' && i.due && i.due >= M.weekStart(T) && i.due <= addDays(M.weekStart(T), 6));
+    const hwPct = hwAll.length ? Math.round((hwAll.reduce((n, i) => n + M.frac(i), 0) / hwAll.length) * 100) : null;
+    return html`<div class="card-h"><span class="card-t"><${Icon} n="chart" s=${15}/>Productivity overview</span><span class="grow"></span><button class="btn sm ghost" onClick=${() => M.go('analytics')}>Analytics<${Icon} n="chevR" s=${13}/></button></div>
+      <div class="row g24 wrap"><${Ring} pct=${st.pct} size=${112}><div><div class="serif" style="font-size:30px;line-height:1">${st.pct}%</div><div class="xxs dim">of today</div></div><//>
+        <div class="stats grow">
+          <div class="stat"><span class="v">${st.completed}</span><span class="l">completed today</span></div>
+          <div class="stat"><span class="v">${st.left}</span><span class="l">remaining today</span></div>
+          <div class="stat"><span class="v">${hwPct == null ? '—' : hwPct + '%'}</span><span class="l">homework this week</span></div>
+          <div class="stat"><span class="v">${M.fmtDur(st.scheduled)}</span><span class="l">scheduled</span></div>
+          <div class="stat"><span class="v">${M.fmtDur(st.focus)}</span><span class="l">focused work</span></div>
+        </div></div>`;
+  };
+  W.deadlines = () => {
+    const list = [...M.open_().filter((i) => i.due).map((i) => ({ ts: M.dueTs(i), title: i.title, color: M.itemColor(i), fn: () => M.open('item', { id: i.id }) })),
+      ...M.state.projects.filter((p) => p.target && p.status !== 'done').map((p) => ({ ts: new Date(p.target + 'T23:59:00').getTime(), title: p.title, color: p.color, proj: true, fn: () => M.go('projects', p.id) }))].sort((a, b) => a.ts - b.ts).slice(0, 6);
+    return html`<div class="card-h"><span class="card-t"><${Icon} n="flag" s=${15}/>Upcoming deadlines</span></div>
+      ${list.length === 0 ? html`<${Empty} sm title="No deadlines ahead"/>` : list.map((x) => { const over = x.ts < Date.now(), h = (x.ts - Date.now()) / 36e5; return html`<div class="ag-row" onClick=${x.fn}><i class="dot" style=${`--c:${x.color}`}></i><span class="grow trunc">${x.title}${x.proj ? ' (project)' : ''}</span><span class="pill ${over ? 'danger' : h <= 24 ? 'warn' : ''}">${over ? 'Overdue' : M.countdown(x.ts)}</span></div>`; })}`;
+  };
+  W.reminders = () => {
+    const list = M.state.reminders.filter((r) => !r.done).sort((a, b) => a.at.localeCompare(b.at)).slice(0, 5), now = M.nowIso();
+    return html`<div class="card-h"><span class="card-t"><${Icon} n="bell" s=${15}/>Reminders</span><span class="grow"></span><button class="ibtn sm" aria-label="Add reminder" onClick=${() => M.open('reminder')}><${Icon} n="plus" s=${15}/></button></div>
+      ${list.length === 0 ? html`<${Empty} sm title="No reminders set"><button class="btn sm" onClick=${() => M.open('reminder')}>Create a reminder</button><//>` : list.map((r) => html`<div class="ag-row"><${M.Check} sm on=${false} onClick=${() => M.act(() => (r.done = true))}/><span class="grow trunc" onClick=${() => M.open('reminder', { id: r.id })}>${r.title}</span><span class="xs ${r.at < now ? 'danger-t' : 'muted'} nowrap">${M.fmtStamp(r.at)}</span></div>`)}`;
+  };
+  W.habits = () => {
+    const T = today(), hs = M.state.habits.filter((h) => !h.archived && M.habitDue(h, T));
+    return html`<div class="card-h"><span class="card-t"><${Icon} n="flame" s=${15}/>Habits today</span><span class="grow"></span><button class="btn sm ghost" onClick=${() => { M.setVs('goalTab', 'habits'); M.go('goals'); }}>All<${Icon} n="chevR" s=${13}/></button></div>
+      ${hs.length === 0 ? html`<${Empty} sm title="No habits yet"><button class="btn sm" onClick=${() => M.open('habit')}>Start a habit</button><//>` : hs.map((h) => html`<div class="ag-row" onClick=${() => M.toggleHabit(h, T)}><${M.Check} sm on=${!!h.log[T]} color=${h.color} onClick=${() => M.toggleHabit(h, T)}/><span>${h.icon}</span><span class="grow trunc" style=${h.log[T] ? 'color:var(--text3)' : ''}>${h.name}</span><span class="xs muted nowrap">${h.freq === 'weekly' ? `${M.habitWeekCount(h, T)}/${h.perWeek} this week` : M.habitStreak(h) ? '🔥 ' + M.habitStreak(h) : ''}</span></div>`)}`;
+  };
+  W.trend = () => {
+    const T = today(); const data = []; for (let i = 6; i >= 0; i--) { const d = addDays(T, -i); data.push({ label: M.DOWS[M.dow(d)], values: [M.completedOn(d).length, Math.round(M.focusMinOn(d) / 30 * 10) / 10], colors: ['var(--accent)', 'var(--ok)'], titles: ['Completed', 'Focus (½ hours)'] }); }
+    return html`<div class="card-h"><span class="card-t"><${Icon} n="chart" s=${15}/>This week's trend</span><span class="grow"></span><div class="legend"><span><i class="dot" style="--c:var(--accent)"></i>Completed</span><span><i class="dot" style="--c:var(--ok)"></i>Focus</span></div></div>
+      <${M.Bars} data=${data} h=${130}/>`;
+  };
+  W.notes = () => {
+    const ns = M.state.notes.filter((n) => n.pinned).slice(0, 4);
+    return html`<div class="card-h"><span class="card-t"><${Icon} n="pin" s=${15}/>Pinned notes</span><span class="grow"></span><button class="ibtn sm" aria-label="Quick capture" onClick=${() => M.open('capture')}><${Icon} n="plus" s=${15}/></button></div>
+      ${ns.length === 0 ? html`<${Empty} sm title="No pinned notes" text="Pin a note to keep it on your dashboard."/>` : html`<div class="grid2" style="gap:10px">${ns.map((n) => html`<button class="card pad hover" style="padding:12px;text-align:left" onClick=${() => { M.setVs('noteId', n.id); M.go('notes'); }}><b class="trunc" style="display:block">${n.title || 'Untitled'}</b><div class="xs muted" style="display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap">${n.body || 'Empty note'}</div></button>`)}</div>`}`;
+  };
+
+  M.views.dashboard = function Dashboard() {
+    const s = M.state, S = s.settings, [edit, setEdit] = useState(false);
+    const hr = new Date().getHours(), greet = hr < 5 ? 'Good night' : hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
+    const wx = M.weather(), ups = nextUp(), st = M.dayStats(today());
+    const move = (i, dir) => M.act(() => { const a = S.dashboard, j = i + dir; if (j < 0 || j >= a.length) return; [a[i], a[j]] = [a[j], a[i]]; });
+    const sizes = ['third', 'half', 'full'];
+    return html`<div class="page">
+      <div class="hero"><div class="grow" style="min-width:260px"><div class="up mb8">${M.fmtDate(today(), 'long')}</div><h1>${greet}${S.name ? ', ' + S.name : ''}.</h1>
+          <div class="row wrap mt12 g6">
+            <span class="pill">${st.total ? `${st.done} of ${st.total} done today` : 'Nothing planned yet'}</span>
+            ${ups.map((u) => html`<button class="pill accent" onClick=${u.fn}><${Icon} n=${u.icon} s=${12}/>${u.text}</button>`)}
+            ${wx ? html`<span class="pill" title=${`${wx.text} · High ${wx.hi}° / Low ${wx.lo}°`}>${wx.icon} ${wx.temp}°${wx.unit} · ${wx.label.split(',')[0]}</span>` : !S.weather.on ? null : html`<span class="pill">Weather unavailable</span>`}
+          </div></div>
+        <div style="text-align:right"><${Clock}/><button class="btn sm ghost mt8" onClick=${() => setEdit(!edit)}><${Icon} n="sliders" s=${13}/>${edit ? 'Done customizing' : 'Customize'}</button></div></div>
+      ${edit && html`<div class="note-box accent mb16"><${Icon} n="info" s=${15}/><div>Reorder widgets with the arrows, change their width, or hide them. Hidden widgets: ${S.dashboard.filter((w) => !w.on).length === 0 ? 'none' : S.dashboard.filter((w) => !w.on).map((w) => html`<button class="pill" style="margin:2px" onClick=${() => M.act(() => (w.on = true))}><${Icon} n="plus" s=${11}/>${M.WIDGETS.find((x) => x.id === w.id).label}</button>`)}</div></div>`}
+      <div class="dash">${S.dashboard.map((w, i) => { if (!w.on || !W[w.id]) return null; const bare = w.id === 'quick' || w.id === 'insights';
+        return html`<div key=${w.id} class="w-${w.size} ${bare ? '' : 'card pad'} ${edit ? 'w-edit' : ''}" style=${bare ? 'min-width:0' : ''}>
+          ${edit && html`<div class="row mb8 g4"><b class="sm grow">${M.WIDGETS.find((x) => x.id === w.id).label}</b>
+            <button class="ibtn sm" aria-label="Move earlier" onClick=${() => move(i, -1)}><${Icon} n="chevU" s=${14}/></button><button class="ibtn sm" aria-label="Move later" onClick=${() => move(i, 1)}><${Icon} n="chevD" s=${14}/></button>
+            <button class="btn sm" onClick=${() => M.act(() => (w.size = sizes[(sizes.indexOf(w.size) + 1) % 3]))}>${{ third: 'Small', half: 'Medium', full: 'Wide' }[w.size]}</button>
+            <button class="ibtn sm" aria-label="Hide widget" onClick=${() => M.act(() => (w.on = false))}><${Icon} n="eyeOff" s=${14}/></button></div>`}
+          ${W[w.id]()}</div>`; })}</div>
+    </div>`;
+  };
+
+  /* ---------- My Day ---------- */
+  M.views.myday = function MyDay() {
+    const d = M.ui.dayDate, T = today(), s = M.state, day = M.day(d), items = M.dayItems(d), st = M.dayStats(d);
+    const go = (x) => { if (M.validDate(x)) { M.ui.dayDate = x; M.emit(); } };
+    const open = items.filter((i) => i.status !== 'done'), done = items.filter((i) => i.status === 'done');
+    const conf = M.conflictsOn(d); const mut = (fn) => M.act(() => fn(M.dayMut(d)));
+    const soon = M.open_().filter((i) => i.due && i.due > d && i.due <= addDays(d, 3) && i.plannedDate !== d).sort((a, b) => M.dueTs(a) - M.dueTs(b)).slice(0, 4);
+    const listProps = (k, placeholder, max) => ({ items: day[k], placeholder, max,
+      onToggle: (c) => mut((dm) => { const x = dm[k].find((y) => y.id === c.id); x.done = !x.done; }), onText: (c, v) => mut((dm) => (dm[k].find((y) => y.id === c.id).text = v)),
+      onDel: (c) => mut((dm) => (dm[k] = dm[k].filter((y) => y.id !== c.id))), onAdd: (t) => mut((dm) => dm[k].push({ id: M.uid(), text: t, done: false })) });
+    const carry = (to) => { const n = M.carryOver(d, to); M.toast(n ? `Moved ${n} unfinished ${n === 1 ? 'item' : 'items'} to ${M.relDate(to).toLowerCase()}.` : 'Nothing unfinished to move.', n ? { label: 'View', action: () => go(to) } : {}); };
+    const unfinished = open.length + day.checklist.filter((c) => !c.done).length;
+    const tools = [
+      { label: 'Duplicate another day into this one…', icon: 'copy', fn: () => M.open('copyDay', { to: d }) },
+      { label: 'Templates…', icon: 'layers', fn: () => M.open('templates', { date: d }) },
+      '-', { label: 'Move unfinished to tomorrow', icon: 'arrowR', fn: () => carry(addDays(d, 1)) },
+      { label: 'Move unfinished to another day…', icon: 'calendar', fn: () => M.open('pickDate', { title: 'Move unfinished items to', value: addDays(d, 1), onPick: carry }) },
+      '-', { label: 'Daily review', icon: 'chart', fn: () => { M.setVs('anTab', 'daily'); M.ui.reviewDate = d; M.go('analytics'); } },
+      { label: "Clear this day's schedule", icon: 'trash', danger: true, fn: () => { const own = M.eventsOn(d).filter((i) => i.ev.source === 'local'); if (!own.length) return M.toast('No schedule blocks to clear.'); M.del(`${own.length} schedule ${own.length === 1 ? 'block' : 'blocks'} on ${M.fmtDate(d)}`, (st2) => own.forEach((i) => { if (M.isRec(i.ev)) i.ev.exceptions.push(d); else st2.events = st2.events.filter((e) => e.id !== i.ev.id); }), 'Repeating events are only removed from this day.'); } }];
+    return html`<div class="page"><${PageHead} title=${d === T ? 'My Day' : M.relDate(d)} sub=${M.fmtDate(d, 'long')}>
+        <${M.DateNav} onPrev=${() => go(addDays(d, -1))} onNext=${() => go(addDays(d, 1))} onToday=${() => go(T)}/>
+        <input class="inp" type="date" style="width:150px" aria-label="Go to date" value=${d} onInput=${(e) => go(e.target.value)}/>
+        <${Menu} trigger=${html`<button class="btn"><${Icon} n="zap" s=${14}/>Plan tools</button>`} items=${tools}/>
+        <button class="btn primary" onClick=${() => M.open('event', { preset: { date: d } })}><${Icon} n="plus" s=${15}/>Block</button><//>
+      <div class="card pad mb16 row g16 wrap"><${Ring} pct=${st.pct} size=${58} stroke=${7}><b class="xs">${st.pct}%</b><//>
+        <div class="stats grow"><div class="stat"><span class="v">${st.done}/${st.total}</span><span class="l">tasks done</span></div><div class="stat"><span class="v">${M.fmtDur(st.scheduled)}</span><span class="l">scheduled</span></div><div class="stat"><span class="v">${M.fmtDur(st.focus)}</span><span class="l">focused</span></div><div class="stat"><span class="v">${st.hwPct == null ? '—' : st.hwPct + '%'}</span><span class="l">homework progress</span></div></div>
+        ${d < T && unfinished > 0 && html`<button class="btn soft" onClick=${() => carry(T)}><${Icon} n="arrowR" s=${14}/>Carry ${unfinished} unfinished to today</button>`}
+        ${d === T && unfinished > 0 && new Date().getHours() >= 18 && html`<button class="btn soft" onClick=${() => carry(addDays(T, 1))}><${Icon} n="arrowR" s=${14}/>Move ${unfinished} unfinished to tomorrow</button>`}</div>
+      <div class="split">
+        <div class="col g16">
+          <div class="card pad"><div class="card-h"><span class="card-t"><${Icon} n="star" s=${15}/>Top priorities</span><span class="xs dim">up to 3</span></div><${M.MiniList} ...${listProps('priorities', 'What matters most today?', 3)} sq=${false}/></div>
+          <div class="card pad"><div class="card-h"><span class="card-t"><${Icon} n="checkCircle" s=${15}/>Tasks & assignments</span><span class="xs dim">${open.length} open</span><span class="grow"></span><button class="btn sm ghost" onClick=${() => M.open('item', { preset: { plannedDate: d } })}><${Icon} n="plus" s=${13}/>Detailed</button></div>
+            <div class="list">${open.map((it) => html`<${ItemRow} it=${it} key=${it.id} drag onDropBefore=${(id, before) => M.reorder(items.map((x) => x.id), id, before, (x, n) => (M.item(x).dayOrder = n))}/>`)}</div>
+            ${items.length === 0 && html`<${Empty} sm title="Nothing planned" text="Add tasks below. Tip: drag a task onto the timeline to block time for it."/>`}
+            <div class="mt8"><${M.QuickAdd} placeholder=${'Add a task for ' + M.relDate(d).toLowerCase() + '…'} onAdd=${(t) => M.quickCreate(t, { plan: d })}/></div>
+            ${done.length > 0 && html`<div class="group-h">Completed <span class="cnt">${done.length}</span></div><div class="list">${done.map((it) => html`<${ItemRow} it=${it} key=${it.id}/>`)}</div>`}</div>
+          ${soon.length > 0 && html`<div class="card pad"><div class="card-h"><span class="card-t"><${Icon} n="zap" s=${15}/>Due soon — make time</span></div>
+            ${soon.map((it) => html`<div class="mini-row" style="cursor:grab" ...${M.dragProps('item', it.id)}><i class="dot" style=${`--c:${M.itemColor(it)}`}></i><div class="grow" style="min-width:0;cursor:pointer" onClick=${() => M.open('item', { id: it.id })}><div class="sm med trunc">${it.title}</div><div class="xs muted">Due ${M.dueLabel(it)}${it.estimate ? ' · ' + M.fmtDur(Math.max(0, it.estimate - (it.spent || 0))) + ' left' : ''}${M.plannedMin(it.id) ? ' · ' + M.fmtDur(M.plannedMin(it.id)) + ' planned' : ''}</div></div>
+              <button class="btn sm" onClick=${() => M.planFor(it, d)}>Plan ${d === T ? 'today' : 'here'}</button><button class="btn sm soft" onClick=${() => M.open('autoSchedule', { id: it.id })}>Find time</button></div>`)}</div>`}
+          <div class="grid2">
+            <div class="card pad"><div class="card-h"><span class="card-t"><${Icon} n="list" s=${15}/>Checklist</span></div><${M.MiniList} ...${listProps('checklist', 'Add checklist item')}/></div>
+            <div class="card pad"><div class="card-h"><span class="card-t"><${Icon} n="target" s=${15}/>Personal goals</span></div><${M.MiniList} ...${listProps('goals', 'Add a goal for the day')}/></div></div>
+          <div class="card pad"><div class="card-h"><span class="card-t"><${Icon} n="file" s=${15}/>Daily notes</span></div><textarea class="inp" rows="4" placeholder="Thoughts, reflections, things to remember…" aria-label="Daily notes" value=${day.notes} onInput=${(e) => mut((dm) => (dm.notes = e.target.value))}></textarea></div>
+        </div>
+        <div class="col g12 sticky-col">
+          ${conf.length > 0 && html`<div class="note-box warn"><${Icon} n="alert" s=${15}/><div><b>${conf.length} scheduling ${conf.length === 1 ? 'conflict' : 'conflicts'}.</b> ${conf.slice(0, 2).map((c) => `“${c[0].ev.title}” overlaps “${c[1].ev.title}”`).join('; ')}. Drag a block to fix it.</div></div>`}
+          <${M.TimeGrid} dates=${[d]}/>
+          <div class="xs dim">Drag empty space to add a block · drag blocks to move or resize · drop a task here to schedule it.</div>
+        </div>
+      </div></div>`;
+  };
+})();
